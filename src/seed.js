@@ -1,14 +1,31 @@
 'use strict';
 
 /**
- * 首次运行初始化：默认参赛者占位、图片《评选细则》里的 5 个维度、管理员口令、阶段。
+ * 首次运行初始化：默认参赛者名单、《评选细则》里的 5 个维度、管理员口令、阶段。
  * 幂等 —— 已有的数据不会被覆盖。
  */
 
 const crypto = require('node:crypto');
 const { db, getSetting, setSetting, DB_PATH } = require('./db');
 
-const DEFAULT_CONTESTANTS = 11;
+// 来自活动方《Dify 工作流参赛名单》，后台可改
+const DEFAULT_CONTESTANTS = [
+  {
+    name: '单福诚',
+    project: '多部门即时业务训练+智能总结V1.3',
+    intro: '解决新工程师快速熟悉业务，老员工强化技术记忆。知识问答“部件安装/磁体冷却/励磁/束流调试/功能验证”',
+  },
+  {
+    name: '戈中元',
+    project: '法规智能辅助评估系统',
+    intro: '法规智能辅助评估系统：对照法规评审文件的合规',
+  },
+  {
+    name: '姜添浩',
+    project: '检测实验ISO17025合规审查系统v1.0',
+    intro: '对照CNAS法规进行合格审查',
+  },
+];
 
 // 来自活动方《评选细则》表格，权重合计 100
 const DEFAULT_DIMENSIONS = [
@@ -56,9 +73,7 @@ function ensureSeed() {
   if (contestantCount === 0) {
     const insert = db.prepare('INSERT INTO contestant (seq, name, project, intro) VALUES (?, ?, ?, ?)');
     db.transaction(() => {
-      for (let i = 1; i <= DEFAULT_CONTESTANTS; i += 1) {
-        insert.run(i, `参赛者 ${String(i).padStart(2, '0')}`, '（待填写项目名）', '');
-      }
+      DEFAULT_CONTESTANTS.forEach((c, i) => insert.run(i + 1, c.name, c.project, c.intro));
     })();
     result.seededContestants = true;
   }
@@ -88,7 +103,9 @@ function ensureSeed() {
 function printSeedReport(result) {
   const lines = [];
   if (result.seededDimensions) lines.push('已写入 5 个默认维度（权重 30/25/20/15/10）');
-  if (result.seededContestants) lines.push(`已写入 ${DEFAULT_CONTESTANTS} 个参赛者占位，请到后台改成真实姓名与项目名`);
+  if (result.seededContestants) {
+    lines.push(`已写入 ${DEFAULT_CONTESTANTS.length} 名默认参赛者：${DEFAULT_CONTESTANTS.map((c) => c.name).join('、')}`);
+  }
   if (lines.length) console.log('[seed] ' + lines.join('\n[seed] '));
 
   if (result.newPassword) {

@@ -2,7 +2,7 @@
   "name": "program-pfxt",
   "version": "1.0.0",
   "private": true,
-  "description": "内网匿名评委打分系统（11 参赛者 × 5 维度，按维度去一高一低加权计分）",
+  "description": "内网匿名评委打分系统（5 维度，按维度去一高一低加权计分）",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
