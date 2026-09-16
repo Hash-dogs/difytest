@@ -1,3 +1,7 @@
 node_modules/
 data/
 *.log
+
+# 参赛名单是公司加密工具包过的文件，入库也读不出内容；~$ 是 Excel 的临时锁文件
+Dify工作流参赛名单.xlsx
+~$*
