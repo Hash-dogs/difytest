@@ -99,8 +99,10 @@ function printSeedReport(result) {
     console.log('');
     console.log('      管理员口令：' + result.newPassword);
     console.log('');
-    console.log('  请立即抄下来。忘了就只能删掉 setting 表里的');
-    console.log('  admin_password_hash 重新生成（会顺带清掉活动配置）。');
+    console.log('  请立即抄下来 —— 口令只在首次运行打印这一次，之后不再显示。');
+    console.log('  忘了就执行下面的命令重置（参赛者、维度、选票都不受影响）：');
+    console.log('');
+    console.log('      npm run reset-password');
     console.log('');
   }
 }
@@ -109,6 +111,7 @@ if (require.main === module) {
   const result = ensureSeed();
   if (!result.seededContestants && !result.seededDimensions && !result.newPassword) {
     console.log('[seed] 数据库已初始化过，未做任何改动：' + DB_PATH);
+    console.log('[seed] 口令不会重新打印。忘了请执行：npm run reset-password');
   }
   printSeedReport(result);
 }

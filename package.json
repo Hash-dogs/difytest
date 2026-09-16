@@ -8,7 +8,8 @@
     "start": "node src/server.js",
     "seed": "node src/seed.js",
     "test": "node --test test/*.test.js",
-    "acceptance": "node test/acceptance.js"
+    "acceptance": "node test/acceptance.js",
+    "reset-password": "node src/reset-password.js"
   },
   "engines": {
     "node": ">=20"
