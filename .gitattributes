@@ -1,0 +1,7 @@
+# Windows 批处理必须始终是 CRLF —— LF 结尾会让 cmd.exe 解析错位、脚本一闪而过。
+# 这条是为了防止 start.bat 的换行符在克隆/检出时被改回 LF。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 其余文本按仓库默认处理
+* text=auto

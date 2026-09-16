@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="robots" content="noindex, nofollow" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f5fd0'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' stroke='white' stroke-width='3.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
+    <title>评委打分</title>
+    <link rel="stylesheet" href="/common.css" />
+    <link rel="stylesheet" href="/vote.css" />
+  </head>
+  <body>
+    <div class="vote-shell">
+      <!-- 加载中 -->
+      <section id="screen-loading" class="screen">
+        <div class="center-state">
+          <div class="spinner"></div>
+          <p>正在加载…</p>
+        </div>
+      </section>
+
+      <!-- 阻断态：链接无效 / 已作废 / 已提交 -->
+      <section id="screen-blocked" class="screen" hidden>
+        <div class="center-state">
+          <div class="big-icon" id="blocked-icon">⚠️</div>
+          <h2 id="blocked-title"></h2>
+          <p id="blocked-desc"></p>
+        </div>
+      </section>
+
+      <!-- 说明页 -->
+      <section id="screen-intro" class="screen" hidden>
+        <header class="intro-head">
+          <p class="eyebrow">评委打分</p>
+          <h1 id="intro-activity"></h1>
+        </header>
+
+        <div class="notice notice-warn intro-warn">
+          <span class="notice-icon">⚠️</span>
+          <span>
+            <strong>提交后无法修改。</strong>请全部打完、确认无误后再提交。<br />
+            共 <span id="intro-count"></span> 个评分点，必须全部打分，不能弃权。
+          </span>
+        </div>
+
+        <h2 class="section-title">评分维度</h2>
+        <ol class="dim-brief" id="intro-dims"></ol>
+
+        <div class="intro-actions">
+          <button type="button" class="btn btn-primary btn-block" id="btn-start">开始打分</button>
+          <p class="hint" id="intro-resume-hint" hidden></p>
+        </div>
+      </section>
+
+      <!-- 打分页 -->
+      <section id="screen-score" class="screen" hidden>
+        <div class="progress-bar-wrap">
+          <div class="progress-meta">
+            <span id="progress-text">已完成 0 / 0 人</span>
+            <button type="button" class="btn btn-sm" id="btn-jump-submit" hidden>去提交 →</button>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
+        </div>
+
+        <div id="card-host"></div>
+
+        <nav class="score-nav">
+          <button type="button" class="btn" id="btn-prev">‹ 上一位</button>
+          <button type="button" class="btn btn-primary" id="btn-next">下一位 ›</button>
+        </nav>
+      </section>
+
+      <!-- 完成页 -->
+      <section id="screen-done" class="screen" hidden>
+        <div class="done-head">
+          <div class="done-check">✓</div>
+          <h1>提交成功</h1>
+          <p>感谢您的评分。选票已匿名记录，<strong>不可修改</strong>。</p>
+        </div>
+        <div id="done-summary"></div>
+      </section>
+    </div>
+
+    <div id="modal-root"></div>
+
+    <script src="/vote.js"></script>
+  </body>
+</html>

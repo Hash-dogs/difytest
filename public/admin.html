@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f5fd0'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' stroke='white' stroke-width='3.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
+    <title>管理后台 · 评委打分系统</title>
+    <link rel="stylesheet" href="/common.css" />
+    <link rel="stylesheet" href="/admin.css" />
+  </head>
+  <body>
+    <!-- ------------------------------ 登录 ------------------------------ -->
+    <section id="login-screen" class="login-wrap">
+      <form class="login-card" id="login-form" autocomplete="off">
+        <h1 class="login-title">评委打分系统</h1>
+        <p class="login-sub">管理后台，请输入管理员口令</p>
+        <label class="field">
+          <span class="field-label">管理员口令</span>
+          <input class="input" type="password" id="login-password" autocomplete="current-password" required />
+        </label>
+        <p class="login-error" id="login-error" hidden></p>
+        <button type="submit" class="btn btn-primary btn-block" id="login-submit">登录</button>
+        <p class="login-hint">口令在首次启动服务时打印在控制台里。</p>
+      </form>
+    </section>
+
+    <!-- ------------------------------ 主界面 ---------------------------- -->
+    <section id="app-screen" hidden>
+      <header class="topbar">
+        <div class="topbar-inner">
+          <div class="brand">
+            <span class="brand-name" id="brand-activity">管理后台</span>
+            <span class="phase-chip" id="phase-chip">—</span>
+          </div>
+          <div class="topbar-actions">
+            <button type="button" class="btn btn-sm" id="btn-phase">封盘</button>
+            <button type="button" class="btn btn-sm" id="btn-backup">备份数据库</button>
+            <button type="button" class="btn btn-sm" id="btn-logout">退出</button>
+          </div>
+        </div>
+        <nav class="tabs" id="tabs">
+          <button type="button" class="tab" data-tab="config">配置</button>
+          <button type="button" class="tab" data-tab="invites">投票链接</button>
+          <button type="button" class="tab" data-tab="progress">进度</button>
+          <button type="button" class="tab" data-tab="results">结果</button>
+        </nav>
+      </header>
+
+      <main class="main">
+        <!-- ---------------------------- 配置 ---------------------------- -->
+        <section class="tab-panel" id="tab-config" hidden>
+          <div class="panel-head">
+            <h2>活动配置</h2>
+            <button type="button" class="btn btn-primary" id="btn-save-config">保存配置</button>
+          </div>
+          <div id="config-lock-notice" hidden class="notice notice-warn" style="margin-bottom:16px">
+            <span class="notice-icon">🔒</span>
+            <span id="config-lock-text"></span>
+          </div>
+
+          <label class="field">
+            <span class="field-label">活动名称</span>
+            <input class="input" id="config-activity" maxlength="60" />
+          </label>
+
+          <div class="panel-head">
+            <h3>评分维度</h3>
+            <div class="panel-head-actions">
+              <span class="weight-sum" id="weight-sum">—</span>
+              <button type="button" class="btn btn-sm" id="btn-add-dim">+ 添加维度</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="grid" id="dim-table">
+              <thead>
+                <tr>
+                  <th class="col-seq">#</th>
+                  <th class="col-name">维度名称</th>
+                  <th class="col-weight">权重</th>
+                  <th>核心评价内容</th>
+                  <th class="col-op"></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="hint">权重必须是整数，合计必须等于 100。</p>
+
+          <div class="panel-head" style="margin-top:26px">
+            <h3>参赛者</h3>
+            <div class="panel-head-actions">
+              <button type="button" class="btn btn-sm" id="btn-add-contestant">+ 添加参赛者</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="grid" id="contestant-table">
+              <thead>
+                <tr>
+                  <th class="col-seq">#</th>
+                  <th class="col-name">姓名</th>
+                  <th class="col-project">项目名</th>
+                  <th>简介</th>
+                  <th class="col-op"></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <div class="import-box">
+            <h4>批量导入参赛者</h4>
+            <p class="hint">
+              每行一位，列用 <b>Tab</b> 或 <b>逗号</b> 分隔：<code>姓名 , 项目名 , 简介</code>。可直接从 Excel 复制粘贴。
+            </p>
+            <textarea class="textarea" id="import-text" rows="4" placeholder="张三 , 智能报表平台 , 一句话简介&#10;李四 , 流程自动化助手"></textarea>
+            <div class="import-actions">
+              <button type="button" class="btn btn-sm" id="btn-import-append">追加导入</button>
+              <button type="button" class="btn btn-sm" id="btn-import-replace">替换现有列表</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- -------------------------- 投票链接 -------------------------- -->
+        <section class="tab-panel" id="tab-invites" hidden>
+          <div class="panel-head">
+            <h2>投票入口</h2>
+          </div>
+
+          <div class="entry-box">
+            <div class="entry-qr">
+              <img id="entry-qr-img" alt="评委扫码入口二维码" />
+            </div>
+            <div class="entry-info">
+              <h3>评委统一扫码入口</h3>
+              <p class="hint">
+                所有评委扫同一个二维码。扫码后系统会给这台设备当场签发一个专属评分链接，
+                之后打分、提交都在各自的链接里完成。<b>二维码可以印死、投影、重复使用。</b>
+              </p>
+              <label class="field" style="margin-top:12px">
+                <span class="field-label">入口地址</span>
+                <select class="input" id="entry-ip-select"></select>
+              </label>
+              <div class="entry-url-row">
+                <input class="input" id="entry-url" readonly />
+                <button type="button" class="btn" id="btn-copy-entry">复制</button>
+              </div>
+              <p class="hint" id="entry-warn" hidden></p>
+            </div>
+          </div>
+
+          <div class="panel-head" style="margin-top:30px">
+            <h2>投票链接</h2>
+            <div class="panel-head-actions">
+              <button type="button" class="btn btn-sm" id="btn-copy-all">复制全部链接</button>
+              <button type="button" class="btn btn-sm" id="btn-refresh-invites">刷新</button>
+            </div>
+          </div>
+          <p class="hint">
+            下面是所有已签发出去的链接（含扫码自动签发的）。一般不需要手工生成，
+            除非你要给某位评委指定一条固定链接。
+          </p>
+
+          <div class="gen-row" style="margin-top:14px">
+            <label class="gen-field">
+              <span class="field-label">生成数量</span>
+              <input class="input" type="number" id="invite-count" value="20" min="1" max="500" />
+            </label>
+            <button type="button" class="btn btn-primary" id="btn-generate">生成链接</button>
+          </div>
+          <p class="hint">
+            生成后请人工分发。链接即为评委身份凭证，请勿在公开群里转发。
+          </p>
+
+          <div class="table-wrap" style="margin-top:16px">
+            <table class="grid" id="invite-table">
+              <thead>
+                <tr>
+                  <th class="col-seq">#</th>
+                  <th class="col-code">短码</th>
+                  <th>状态</th>
+                  <th>打开时间</th>
+                  <th>提交时间</th>
+                  <th class="col-op">操作</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ---------------------------- 进度 ---------------------------- -->
+        <section class="tab-panel" id="tab-progress" hidden>
+          <div class="panel-head">
+            <h2>投票进度</h2>
+            <button type="button" class="btn btn-sm" id="btn-refresh-progress">刷新</button>
+          </div>
+
+          <div class="stat-hero">
+            <div class="stat-hero-num"><span id="progress-submitted">0</span> <small>/ <span id="progress-total">0</span></small></div>
+            <div class="stat-hero-label">已提交</div>
+            <div class="stat-hero-track"><div class="stat-hero-fill" id="progress-hero-fill"></div></div>
+          </div>
+
+          <div class="stat-grid" id="progress-stats"></div>
+
+          <div id="chase-box" hidden>
+            <h3 class="sub-title">已领取但未提交</h3>
+            <p class="hint">
+              下面这些评分链接被领走后没有交卷。⚠️
+              <b>扫码入口不记录身份，所以这里只能看到是哪几条链接，无法知道是谁在用</b>——
+              需要催票请当场点名确认。若必须知道谁没交，请改用「投票链接」页手工为每人指定一条链接。
+            </p>
+            <div class="code-chips" id="chase-chips"></div>
+          </div>
+        </section>
+
+        <!-- ---------------------------- 结果 ---------------------------- -->
+        <section class="tab-panel" id="tab-results" hidden>
+          <div class="panel-head">
+            <h2>计分结果</h2>
+            <button type="button" class="btn btn-sm" id="btn-refresh-results">刷新</button>
+          </div>
+
+          <div class="result-banner" id="result-banner"></div>
+          <div class="notice notice-danger" id="integrity-warning" hidden style="margin-bottom:16px">
+            <span class="notice-icon">⚠️</span><span id="integrity-text"></span>
+          </div>
+
+          <div class="result-meta" id="result-meta"></div>
+
+          <div class="table-wrap" style="margin-top:14px">
+            <table class="grid rank-table" id="rank-table">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <div id="radar-section" hidden>
+            <h3 class="sub-title" style="margin-top:26px">维度雷达图</h3>
+            <p class="hint">在排名表里勾选参赛者即可叠加对比（最多 6 位）。</p>
+            <div class="radar-wrap" id="radar-wrap"></div>
+          </div>
+        </section>
+      </main>
+    </section>
+
+    <div id="toast-root"></div>
+    <div id="modal-root"></div>
+
+    <script src="/admin.js"></script>
+  </body>
+</html>
