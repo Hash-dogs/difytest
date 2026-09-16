@@ -14,6 +14,7 @@ const { verifyPassword } = require('../seed');
 const { computeResults } = require('../scoring');
 const { randomCode } = require('../codes');
 const { entryUrls } = require('../net');
+const { buildXlsx } = require('../xlsx');
 const qrcode = require('qrcode-generator');
 
 const router = express.Router();
@@ -405,6 +406,152 @@ router.get('/api/admin/results', requireAdmin, (req, res) => {
           : `已标记提交 ${submittedCount} 个链接，但库里有 ${result.n} 张选票，两者不一致，请核查。`,
     },
   });
+});
+
+/* ---------------------------- 导出 Excel ---------------------------- */
+
+/** 把计分结果摊平成两个工作表 + 一张说明页 */
+function buildResultSheets(data) {
+  const dims = data.dimensions;
+  const rows = data.rows;
+
+  // ---- Sheet 1：汇总（与页面上的排名表一致）----
+  const summary = [
+    ['名次', '参赛者', '项目', ...dims.map((d) => `${d.name}（${d.weight}%）`), '加权总分'],
+    ...rows.map((r) => [
+      r.rank,
+      r.name,
+      r.project,
+      ...dims.map((d) => Number((r.margins[d.id] ?? 0).toFixed(4))),
+      Number((r.total ?? 0).toFixed(4)),
+    ]),
+  ];
+
+  // ---- Sheet 2：维度明细（每个参赛者 × 每个维度）----
+  const detail = [
+    [
+      '参赛者',
+      '项目',
+      '维度',
+      '权重',
+      '1分票数',
+      '2分票数',
+      '3分票数',
+      '4分票数',
+      '5分票数',
+      '去掉的最高分',
+      '去掉的最低分',
+      '去分后票数',
+      '去分后总分',
+      '该维度均分',
+    ],
+  ];
+  for (const r of rows) {
+    for (const d of dims) {
+      const info = r.details[d.id];
+      if (!info) continue;
+      detail.push([
+        r.name,
+        r.project,
+        d.name,
+        d.weight,
+        info.counts[1],
+        info.counts[2],
+        info.counts[3],
+        info.counts[4],
+        info.counts[5],
+        info.removedHigh,
+        info.removedLow,
+        info.keptCount,
+        info.sum,
+        Number(info.margin.toFixed(4)),
+      ]);
+    }
+  }
+
+  // ---- Sheet 3：计分说明（含匿名边界的书面记录）----
+  const kText =
+    data.k >= 1
+      ? `每维度去掉一个最高分和一个最低分后，以 ${data.k} 张计平均`
+      : `去掉一高一低后已无剩余分数（有效票数 ${data.n} 张，需至少 3 张才能计分）`;
+  const info = [
+    ['项目', '内容'],
+    ['活动名称', data.activityName || ''],
+    ['导出时间', new Date().toLocaleString('zh-CN', { hour12: false })],
+    ['有效选票数 N', data.n],
+    ['每单元格保留票数 k', data.k],
+    ['计分口径', kText],
+    ['维度权重', dims.map((d) => `${d.name} ${d.weight}%`).join(' / ')],
+    ['加权总分算法', 'Σ(维度均分 × 权重) ÷ 100，取值范围 1.00–5.00'],
+    ['排名规则', '按整数加权分降序，并列名次相同、下一名跳号'],
+    ['', ''],
+    [
+      '⚠️ 匿名说明',
+      '本表不含、也无法推算「哪位评委打了什么分」。邀请码与选票在数据库层面没有任何关联键，' +
+        '系统只记录「某个链接是否已提交」，不记录「提交了什么」。这是设计约定，不是导出时的取舍。',
+    ],
+  ];
+
+  return [
+    { name: '汇总', rows: summary },
+    { name: '维度明细', rows: detail },
+    { name: '计分说明', rows: info },
+  ];
+}
+
+router.get('/api/admin/results.xlsx', requireAdmin, (req, res) => {
+  const config = readConfig();
+
+  let scoreRows;
+  try {
+    scoreRows = db.prepare('SELECT ballot_id, contestant_id, dimension_id, value FROM score').all();
+  } catch (err) {
+    return bad(res, '读取选票失败：' + err.message, 500, 'internal');
+  }
+
+  const byBallot = new Map();
+  for (const r of scoreRows) {
+    let arr = byBallot.get(r.ballot_id);
+    if (!arr) byBallot.set(r.ballot_id, (arr = []));
+    arr.push(r);
+  }
+
+  let result;
+  try {
+    result = computeResults({
+      contestants: config.contestants,
+      dimensions: config.dimensions,
+      ballots: [...byBallot.values()],
+    });
+  } catch (err) {
+    return bad(res, err.message, 500, 'scoring_failed');
+  }
+
+  if (result.insufficient) {
+    return bad(res, '还没有任何有效选票，无法导出。', 409, 'no_data');
+  }
+
+  const sheets = buildResultSheets({
+    activityName: config.activityName,
+    dimensions: config.dimensions,
+    rows: result.rows,
+    n: result.n,
+    k: result.k,
+  });
+
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const filename = `评分结果-${stamp}.xlsx`;
+
+  res.setHeader(
+    'Content-Type',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  );
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="result.xlsx"; filename*=UTF-8''${encodeURIComponent(filename)}`
+  );
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(buildXlsx(sheets));
 });
 
 /* ------------------------------ 封盘 ------------------------------- */

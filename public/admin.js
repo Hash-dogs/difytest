@@ -21,15 +21,12 @@
     revoked: '已作废',
   };
   const STATUS_CLASS = { issued: 'is-faint', opened: 'is-warn', submitted: 'is-ok', revoked: 'is-faint' };
-  const RADAR_COLORS = ['#3b6fe0', '#e0574a', '#22a05a', '#d99a1f', '#8b5cf6', '#0ea5b7'];
-  const MAX_RADAR_SERIES = 6;
   const REFRESH_MS = 20000;
 
   const state = {
     activeTab: 'config',
     configDraft: { activityName: '', contestants: [], dimensions: [] },
     submittedCount: 0,
-    selectedIds: [],
     results: null,
     timer: null,
   };
@@ -741,7 +738,6 @@
       $('rank-table').querySelector('thead').innerHTML = '';
       $('rank-table').querySelector('tbody').innerHTML =
         '<tr class="empty-row"><td>数据不足：还没有任何有效选票，无法排名。</td></tr>';
-      $('radar-section').hidden = true;
       return;
     }
 
@@ -757,7 +753,6 @@
     const thead = $('rank-table').querySelector('thead');
     thead.innerHTML =
       '<tr>' +
-      '<th class="pick-cell"></th>' +
       '<th class="col-rank">名次</th>' +
       '<th>参赛者</th>' +
       '<th>项目</th>' +
@@ -765,24 +760,12 @@
       '<th class="num-cell">加权总分</th>' +
       '</tr>';
 
-    // 默认选中前三名做雷达对比
-    const validIds = rows.map((r) => r.contestantId);
-    state.selectedIds = state.selectedIds.filter((id) => validIds.includes(id));
-    if (!state.selectedIds.length) {
-      state.selectedIds = rows.slice(0, 3).map((r) => r.contestantId);
-    }
-
     const tbody = $('rank-table').querySelector('tbody');
     tbody.innerHTML = rows
       .map((r) => {
-        const picked = state.selectedIds.includes(r.contestantId);
         const tied = rows.filter((o) => o.u === r.u).length > 1;
         return `
-          <tr data-contestant-id="${r.contestantId}" class="${picked ? 'is-selected' : ''}">
-            <td class="pick-cell">
-              <input type="checkbox" data-action="pick" data-id="${r.contestantId}" ${picked ? 'checked' : ''}
-                     aria-label="在雷达图中对比 ${esc(r.name)}" />
-            </td>
+          <tr data-contestant-id="${r.contestantId}">
             <td class="col-rank"><span class="rank-badge ${tied ? 'is-tie' : r.rank === 1 ? 'is-top' : ''}">${r.rank}</span></td>
             <td>${esc(r.name)}</td>
             <td>${esc(r.project)}</td>
@@ -791,122 +774,18 @@
           </tr>`;
       })
       .join('');
-
-    renderRadar(dims, rows);
   }
-
-  $('rank-table').addEventListener('change', (event) => {
-    const input = event.target.closest('[data-action="pick"]');
-    if (!input) return;
-    const id = Number(input.dataset.id);
-
-    if (input.checked) {
-      if (state.selectedIds.length >= MAX_RADAR_SERIES) {
-        input.checked = false;
-        toast(`最多同时对比 ${MAX_RADAR_SERIES} 位`, true);
-        return;
-      }
-      state.selectedIds.push(id);
-    } else {
-      state.selectedIds = state.selectedIds.filter((x) => x !== id);
-    }
-
-    const tr = input.closest('tr');
-    if (tr) tr.classList.toggle('is-selected', input.checked);
-    if (state.results) renderRadar(state.results.dimensions, state.results.rows);
-  });
 
   $('btn-refresh-results').addEventListener('click', loadResults);
 
-  /* ------------------------------ 雷达图 ------------------------------ */
-
-  function renderRadar(dims, rows) {
-    const selected = state.selectedIds
-      .map((id) => rows.find((r) => r.contestantId === id))
-      .filter(Boolean);
-
-    const section = $('radar-section');
-    if (!selected.length) {
-      section.hidden = true;
-      return;
+  $('btn-export').addEventListener('click', () => {
+    if (!state.results || state.results.insufficient) {
+      return toast('还没有有效选票，无法导出', true);
     }
-    section.hidden = false;
-
-    const W = 440;
-    const H = 360;
-    const cx = W / 2;
-    const cy = H / 2;
-    const R = 104;
-    const n = dims.length;
-
-    const pt = (i, r) => {
-      const a = -Math.PI / 2 + (2 * Math.PI * i) / n;
-      return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
-    };
-    const rOf = (v) => {
-      const clamped = Math.max(1, Math.min(5, typeof v === 'number' ? v : 1));
-      return ((clamped - 1) / 4) * R; // 1..5 映射到 0..R，低分区间才拉得开
-    };
-    const shortName = (name) => (name.length > 7 ? name.slice(0, 6) + '…' : name);
-
-    let svg = `<svg class="radar-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="各维度平均分雷达图">`;
-
-    for (let v = 2; v <= 5; v += 1) {
-      const pts = dims.map((_, i) => pt(i, rOf(v)).join(',')).join(' ');
-      svg += `<polygon points="${pts}" fill="none" stroke="var(--border)" stroke-width="1" />`;
-    }
-
-    dims.forEach((_, i) => {
-      const [x, y] = pt(i, R);
-      svg += `<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="var(--border)" stroke-width="1" />`;
-    });
-
-    for (let v = 1; v <= 5; v += 1) {
-      svg += `<text x="${cx + 6}" y="${cy - rOf(v) + 4}" font-size="10" fill="var(--text-faint)">${v}</text>`;
-    }
-
-    dims.forEach((d, i) => {
-      const [x, y] = pt(i, R + 30);
-      const a = -Math.PI / 2 + (2 * Math.PI * i) / n;
-      const cos = Math.cos(a);
-      const anchor = Math.abs(cos) < 0.2 ? 'middle' : cos > 0 ? 'start' : 'end';
-      svg +=
-        `<text x="${x}" y="${y}" font-size="11.5" font-weight="600" fill="var(--text-dim)" ` +
-        `text-anchor="${anchor}" dominant-baseline="middle">${esc(shortName(d.name))}` +
-        `<title>${esc(d.name)}</title></text>`;
-    });
-
-    selected.forEach((row, idx) => {
-      const color = RADAR_COLORS[idx % RADAR_COLORS.length];
-      const pts = dims.map((d, i) => pt(i, rOf(row.margins[d.id])).join(',')).join(' ');
-      svg += `<polygon points="${pts}" fill="${color}" fill-opacity="0.13" stroke="${color}" stroke-width="2" stroke-linejoin="round" />`;
-      dims.forEach((d, i) => {
-        const [x, y] = pt(i, rOf(row.margins[d.id]));
-        svg += `<circle cx="${x}" cy="${y}" r="2.8" fill="${color}" />`;
-      });
-    });
-
-    svg += '</svg>';
-
-    const legend =
-      '<div class="radar-legend">' +
-      selected
-        .map((row, idx) => {
-          const color = RADAR_COLORS[idx % RADAR_COLORS.length];
-          return (
-            '<div class="legend-item">' +
-            `<span class="legend-swatch" style="background:${color}"></span>` +
-            `<span>${esc(row.name)}</span>` +
-            `<span class="legend-total">${fmt2(row.total)}</span>` +
-            '</div>'
-          );
-        })
-        .join('') +
-      '<p class="hint" style="margin-top:6px">刻度为 1–5 分；同心环每 1 分一格。</p>' +
-      '</div>';
-
-    $('radar-wrap').innerHTML = svg + legend;
-  }
+    // 走浏览器下载；Excel 由服务端生成，用带 Cookie 的同源请求即可
+    window.location.href = '/api/admin/results.xlsx';
+    toast('已开始下载 Excel');
+  });
 
   /* -------------------------------- 启动 -------------------------------- */
 

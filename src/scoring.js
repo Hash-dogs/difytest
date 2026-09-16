@@ -63,6 +63,7 @@ function computeResults({ contestants, dimensions, ballots }) {
         name: c.name,
         project: c.project,
         margins: {},
+        details: {},
         u: 0,
         total: null,
         rank: null,
@@ -103,15 +104,29 @@ function computeResults({ contestants, dimensions, ballots }) {
 
   const rows = contestants.map((c) => {
     const margins = {};
+    const details = {}; // 导出用：该单元格的分数分布与去分过程
     let u = 0;
 
     for (const d of dimensions) {
       const raw = buckets.get(cellKey(c.id, d.id));
       // 升序排序后切掉首尾各一个 —— 恰好去掉一个最小值和一个最大值（各一个，不是去所有极值）
-      const kept = raw.slice().sort((a, b) => a - b).slice(1, -1);
+      const sorted = raw.slice().sort((a, b) => a - b);
+      const kept = sorted.slice(1, -1);
       const sum = kept.reduce((acc, v) => acc + v, 0);
       margins[d.id] = sum / k;
       u += d.weight * sum; // 整数运算
+
+      const counts = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+      for (const v of raw) counts[v] += 1;
+      details[d.id] = {
+        counts,
+        // 去分后已无剩余分数时（N ≤ 2），被去掉的其实就是全部分数
+        removedLow: sorted.length ? sorted[0] : null,
+        removedHigh: sorted.length ? sorted[sorted.length - 1] : null,
+        keptCount: kept.length,
+        sum,
+        margin: sum / k,
+      };
     }
 
     return {
@@ -120,6 +135,7 @@ function computeResults({ contestants, dimensions, ballots }) {
       name: c.name,
       project: c.project,
       margins,
+      details,
       u,
       total: u / (WEIGHT_TOTAL * k),
       rank: null,
