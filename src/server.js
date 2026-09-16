@@ -5,7 +5,7 @@ const express = require('express');
 
 const { ensureSeed, printSeedReport } = require('./seed');
 const { DB_PATH } = require('./db');
-const { lanAddresses } = require('./net');
+const { listLanInterfaces } = require('./net');
 const voteRoutes = require('./routes/vote');
 const adminRoutes = require('./routes/admin');
 
@@ -47,23 +47,27 @@ const result = ensureSeed();
 printSeedReport(result);
 
 const server = app.listen(PORT, HOST, () => {
-  const ips = lanAddresses();
+  const ifaces = listLanInterfaces();
   console.log('');
   console.log('  ════════════════════════════════════════════════');
   console.log('   评委匿名打分系统已启动');
   console.log('  ════════════════════════════════════════════════');
   console.log('');
   console.log('   管理后台（本机）：http://localhost:' + PORT + '/admin');
-  if (ips.length) {
+  if (ifaces.length) {
     console.log('');
-    console.log('   评委扫码入口（把这个地址做成二维码给评委）：');
-    for (const ip of ips) {
-      console.log('     http://' + ip + ':' + PORT + '/v');
-    }
+    console.log('   评委扫码入口（后台会自动为下面第一个地址生成二维码）：');
+    ifaces.forEach((i, idx) => {
+      const tag = (idx === 0 ? ' ← 默认' : '') + (i.virtual ? '  [虚拟网卡，手机多半连不上]' : '');
+      console.log(`     http://${i.ip}:${PORT}/v   (${i.name})${tag}`);
+    });
     console.log('');
     console.log('   后台「投票链接」页可以直接显示并打印这个二维码。');
     console.log('');
-    console.log('   本机局域网 IP：' + ips.join('、'));
+    console.log('   本机局域网 IP：' + ifaces.map((i) => i.ip).join('、'));
+    if (ifaces.length > 1) {
+      console.log('   有多个地址时，请在后台选一个评委手机能访问到的。');
+    }
   } else {
     console.log('');
     console.log('   ⚠️ 没有检测到局域网 IPv4 地址，手机可能访问不到。');
@@ -77,9 +81,21 @@ const server = app.listen(PORT, HOST, () => {
 
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
+    const hint =
+      process.platform === 'win32'
+        ? 'set PORT=3001 && npm start'
+        : 'PORT=3001 npm start';
     console.error('');
     console.error(`  端口 ${PORT} 已被占用。`);
-    console.error(`  换个端口再启动：  set PORT=3001 && npm start`);
+    console.error(`  换个端口再启动：  ${hint}`);
+    console.error('');
+    process.exit(1);
+  }
+  if (err.code === 'EACCES') {
+    console.error('');
+    console.error(`  没有权限绑定端口 ${PORT}。`);
+    console.error('  1024 以下的端口需要 root；换个高位端口即可，例如：');
+    console.error('    PORT=3000 npm start');
     console.error('');
     process.exit(1);
   }

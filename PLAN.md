@@ -398,11 +398,46 @@ program-pfxt/
 
 ### 8.3 启动
 
-`start.bat` 内容要点：
+**Windows**：双击 `start.bat`
+**Linux / macOS**：`./start.sh`（首次需 `chmod +x start.sh`）
 
-1. `npm install`（若 `node_modules` 不存在）
-2. 启动服务，打印：`本机 http://localhost:3000` + **局域网 `http://<本机IP>:3000`**
-3. 首次运行自动执行 `seed.js` 并生成管理员口令，打印到控制台
+两者逻辑一致：
+
+1. 检查 Node ≥ 20
+2. `npm install`（若 `node_modules` 不存在）
+3. 启动服务，打印本机与**局域网**访问地址（含网卡名）
+4. 首次运行自动执行 `seed.js` 并生成管理员口令，打印到控制台
+
+### 8.4 ⚠️ Linux 部署（2026-09-16 适配）
+
+代码本身已跨平台（全部用 `path.join`，无平台分支）。移植时真正要注意的是这三点：
+
+**1. `better-sqlite3` 是原生模块，装它需要「网络」或「编译工具」二选一**
+
+`npm install` 时它先尝试下载预编译二进制（需访问 GitHub），失败则回退到源码编译（需 `g++` / `make` / `python3`）。**两者都没有就会装不上，服务起不来。**
+
+- 有外网：直接 `npm install` 即可
+- 无外网：先在能上网的机器上 `npm install`，把整个 `node_modules/` 连同项目一起拷过去
+- 要本地编译：`sudo apt-get install -y build-essential python3`
+
+**2. 网卡探测已针对 Linux 加固（`src/net.js`）**
+
+Linux 上 `os.networkInterfaces()` 会返回 `docker0` / `br-*` / `veth*` / `virbr0` / `tailscale0` 等虚拟网卡。若直接取第一个，二维码可能指向 `172.17.0.1` 这类容器网桥，**评委手机根本连不上**。
+
+现在按「真实网卡优先 → 常见网段（192.168 > 10 > 172.16–31）优先」排序，并在后台下拉框里显示网卡名、对虚拟网卡给出警告。
+
+**3. 防火墙换成 firewalld / ufw**
+
+Windows 上是放行入站规则；Linux 上通常是：
+
+```bash
+sudo ufw allow 3000/tcp          # Ubuntu / Debian
+sudo firewall-cmd --add-port=3000/tcp --permanent && sudo firewall-cmd --reload   # RHEL / CentOS
+```
+
+`start.sh` 会检测 ufw 是否启用、端口是否放行，并给出提示。
+
+> 端口用 3000 不需要 root（>1024）；若改成 80 需要 root，且代码已对 `EACCES` 给出提示。
 
 ---
 

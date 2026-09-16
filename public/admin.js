@@ -470,15 +470,24 @@
 
       select.disabled = false;
       const previous = select.value;
+      // 带上网卡名：Linux 上常有 docker0 / virbr0 之类的虚拟网卡混在里面
       select.innerHTML = entryUrls
-        .map((u) => `<option value="${esc(u.ip)}">${esc(u.ip)}</option>`)
+        .map((u) => {
+          const label = `${u.ip}  (${u.name})${u.virtual ? ' — 虚拟网卡' : ''}`;
+          return `<option value="${esc(u.ip)}">${esc(label)}</option>`;
+        })
         .join('');
       select.value = entryUrls.some((u) => u.ip === previous) ? previous : entryUrls[0].ip;
 
       warn.hidden = entryUrls.length === 1;
       if (entryUrls.length > 1) {
         warn.textContent =
-          '这台电脑有多个内网地址。请选一个评委手机能访问到的（通常是手机所在网段的那个），二维码会跟着变。';
+          '这台电脑有多个内网地址。请选一个评委手机能访问到的（通常是真实网卡、且和手机同网段的那个），二维码会跟着变。';
+      }
+      if (entryUrls[0] && entryUrls[0].virtual) {
+        warn.hidden = false;
+        warn.textContent =
+          '⚠️ 默认选中的是虚拟网卡（如 docker0 / virbr0），评委手机访问不到。请改选真实网卡的地址。';
       }
 
       applyEntry();

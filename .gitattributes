@@ -3,5 +3,9 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 
+# shell 脚本必须是 LF，否则在 Linux 上会因为 `#!/usr/bin/env bash\r` 而报
+# "bad interpreter: No such file or directory"
+*.sh text eol=lf
+
 # 其余文本按仓库默认处理
 * text=auto
