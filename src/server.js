@@ -44,7 +44,6 @@ app.use((err, req, res, next) => {
 });
 
 const result = ensureSeed();
-printSeedReport(result);
 
 const server = app.listen(PORT, HOST, () => {
   const ifaces = listLanInterfaces();
@@ -77,6 +76,9 @@ const server = app.listen(PORT, HOST, () => {
   console.log('');
   console.log('   按 Ctrl+C 停止服务。');
   console.log('');
+
+  // 放在最后：口令是每次启动都要看的东西，让它成为屏幕上最后一屏内容
+  printSeedReport(result);
 });
 
 server.on('error', (err) => {

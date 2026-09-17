@@ -3,6 +3,11 @@
 /**
  * 首次运行初始化：默认参赛者名单、《评选细则》里的 5 个维度、管理员口令、阶段。
  * 幂等 —— 已有的数据不会被覆盖。
+ *
+ * 管理员口令同时存两份（PLAN §13 决策）：
+ *   admin_password_hash  —— scrypt 哈希，登录时校验用
+ *   admin_password_plain —— 明文，纯粹为了每次启动都能打印到终端
+ * 哈希不可逆，没有明文就没法「启动即见口令」，所以这是刻意的取舍。
  */
 
 const crypto = require('node:crypto');
@@ -63,11 +68,24 @@ function verifyPassword(plain, stored) {
   }
 }
 
+const ADMIN_HASH_KEY = 'admin_password_hash';
+const ADMIN_PLAIN_KEY = 'admin_password_plain';
+
 /**
- * @returns {{ seededContestants: boolean, seededDimensions: boolean, newPassword: string|null }}
+ * @returns {{
+ *   seededContestants: boolean,
+ *   seededDimensions: boolean,
+ *   adminPassword: string|null,
+ *   passwordState: 'created'|'regenerated'|'existing'
+ * }}
  */
 function ensureSeed() {
-  const result = { seededContestants: false, seededDimensions: false, newPassword: null };
+  const result = {
+    seededContestants: false,
+    seededDimensions: false,
+    adminPassword: null,
+    passwordState: 'existing',
+  };
 
   const contestantCount = db.prepare('SELECT COUNT(*) AS n FROM contestant').get().n;
   if (contestantCount === 0) {
@@ -87,10 +105,22 @@ function ensureSeed() {
     result.seededDimensions = true;
   }
 
-  if (!getSetting('admin_password_hash')) {
+  const storedHash = getSetting(ADMIN_HASH_KEY);
+  const storedPlain = getSetting(ADMIN_PLAIN_KEY);
+
+  if (storedHash && storedPlain) {
+    // 正常路径：口令已存在，明文也在，直接拿去打印
+    result.adminPassword = storedPlain;
+    result.passwordState = 'existing';
+  } else {
+    // a) 全新库 —— 生成一个
+    // b) 老库（本次改动之前建的）只存了哈希，不可逆、还原不出来，
+    //    只能重新生成一个，并在启动横幅里明确告知旧口令已失效
     const plain = randomPassword();
-    setSetting('admin_password_hash', hashPassword(plain));
-    result.newPassword = plain;
+    setSetting(ADMIN_HASH_KEY, hashPassword(plain));
+    setSetting(ADMIN_PLAIN_KEY, plain);
+    result.adminPassword = plain;
+    result.passwordState = storedHash ? 'regenerated' : 'created';
   }
 
   if (getSetting('phase') === null) setSetting('phase', 'open');
@@ -98,6 +128,31 @@ function ensureSeed() {
   if (getSetting('deadline') === null) setSetting('deadline', '');
 
   return result;
+}
+
+// 终端里中日韩字符占两列，标题长度又随状态变化，所以边框宽度得自己算。
+// 用码点区间而不是正则字面量：纯 ASCII，不会被编码问题搞坏。
+const isWide = (cp) =>
+  (cp >= 0x1100 && cp <= 0x115f) || // 谚文字母
+  (cp >= 0x2e80 && cp <= 0x303e) || // 中日韩部首与标点（、。「」等）
+  (cp >= 0x3041 && cp <= 0x33ff) ||
+  (cp >= 0x3400 && cp <= 0x4dbf) ||
+  (cp >= 0x4e00 && cp <= 0x9fff) || // 汉字主体
+  (cp >= 0xa000 && cp <= 0xa4cf) ||
+  (cp >= 0xac00 && cp <= 0xd7a3) || // 谚文音节
+  (cp >= 0xf900 && cp <= 0xfaff) ||
+  (cp >= 0xfe30 && cp <= 0xfe6f) ||
+  (cp >= 0xff00 && cp <= 0xff60) || // 全角逗号、括号等
+  (cp >= 0xffe0 && cp <= 0xffe6);
+
+const textWidth = (s) => [...s].reduce((n, ch) => n + (isWide(ch.codePointAt(0)) ? 2 : 1), 0);
+
+const BOX_WIDTH = 46;
+
+function boxLine(text, width) {
+  const pad = Math.max(0, width - textWidth(text));
+  const left = Math.floor(pad / 2);
+  return '  │' + ' '.repeat(left) + text + ' '.repeat(pad - left) + '│';
 }
 
 function printSeedReport(result) {
@@ -108,29 +163,50 @@ function printSeedReport(result) {
   }
   if (lines.length) console.log('[seed] ' + lines.join('\n[seed] '));
 
-  if (result.newPassword) {
-    console.log('');
-    console.log('  ┌──────────────────────────────────────────────┐');
-    console.log('  │  首次运行，已生成管理员口令（只显示这一次）  │');
-    console.log('  └──────────────────────────────────────────────┘');
-    console.log('');
-    console.log('      管理员口令：' + result.newPassword);
-    console.log('');
-    console.log('  请立即抄下来 —— 口令只在首次运行打印这一次，之后不再显示。');
-    console.log('  忘了就执行下面的命令重置（参赛者、维度、选票都不受影响）：');
-    console.log('');
-    console.log('      npm run reset-password');
+  if (!result.adminPassword) return;
+
+  const title =
+    {
+      created: '首次运行，已生成管理员口令',
+      regenerated: '旧库只有口令哈希，已重新生成',
+      existing: '管理员口令（每次启动都会打印）',
+    }[result.passwordState] || '管理员口令';
+
+  console.log('');
+  console.log('  ┌' + '─'.repeat(BOX_WIDTH) + '┐');
+  console.log(boxLine(title, BOX_WIDTH));
+  console.log('  └' + '─'.repeat(BOX_WIDTH) + '┘');
+  console.log('');
+  console.log('      管理员口令：' + result.adminPassword);
+  console.log('');
+
+  if (result.passwordState === 'regenerated') {
+    console.log('  ⚠️ 这个数据库原本只存了口令哈希，哈希不可逆、还原不出旧口令，');
+    console.log('     所以上面这个是刚刚新生成的 —— 旧口令从此刻起失效。');
     console.log('');
   }
+
+  console.log('  口令每次启动都会打印在这里，忘了就往上翻。换成自己指定的：');
+  console.log('');
+  console.log('      npm run reset-password 你的新口令');
+  console.log('');
 }
 
 if (require.main === module) {
   const result = ensureSeed();
-  if (!result.seededContestants && !result.seededDimensions && !result.newPassword) {
-    console.log('[seed] 数据库已初始化过，未做任何改动：' + DB_PATH);
-    console.log('[seed] 口令不会重新打印。忘了请执行：npm run reset-password');
+  if (!result.seededContestants && !result.seededDimensions && result.passwordState === 'existing') {
+    console.log('[seed] 数据库已初始化过，未改动任何业务数据：' + DB_PATH);
   }
   printSeedReport(result);
 }
 
-module.exports = { ensureSeed, printSeedReport, hashPassword, verifyPassword, randomPassword, DEFAULT_DIMENSIONS };
+module.exports = {
+  ensureSeed,
+  printSeedReport,
+  hashPassword,
+  verifyPassword,
+  randomPassword,
+  DEFAULT_DIMENSIONS,
+  ADMIN_HASH_KEY,
+  ADMIN_PLAIN_KEY,
+};

@@ -3,7 +3,7 @@
 /**
  * 重置管理员口令：npm run reset-password
  *
- * 只替换 setting 表里的 admin_password_hash 一行 ——
+ * 只替换 setting 表里的 admin_password_hash / admin_password_plain 两行 ——
  * 参赛者、维度、权重、已生成的链接、已提交的选票统统不动。
  *
  * 用命令行参数可以直接指定口令（不推荐，会留在 shell history 里）：
@@ -11,7 +11,7 @@
  */
 
 const { db, DB_PATH, getSetting, setSetting } = require('./db');
-const { hashPassword, randomPassword } = require('./seed');
+const { hashPassword, randomPassword, ADMIN_HASH_KEY, ADMIN_PLAIN_KEY } = require('./seed');
 
 const given = process.argv[2];
 const plain = given && given.trim() ? given.trim() : randomPassword();
@@ -21,9 +21,12 @@ if (given && plain.length < 6) {
   process.exit(1);
 }
 
-const hadOne = Boolean(getSetting('admin_password_hash'));
+const hadOne = Boolean(getSetting(ADMIN_HASH_KEY));
 
-setSetting('admin_password_hash', hashPassword(plain));
+setSetting(ADMIN_HASH_KEY, hashPassword(plain));
+// 明文是给「每次启动打印口令」用的，必须和哈希一起更新，
+// 否则下次启动会认为这是老库、又生成一个新口令把这里覆盖掉。
+setSetting(ADMIN_PLAIN_KEY, plain);
 
 const counts = {
   contestants: db.prepare('SELECT COUNT(*) AS n FROM contestant').get().n,
@@ -44,4 +47,5 @@ console.log(
 );
 console.log('');
 console.log('  如果服务正在运行，请重启它让新口令生效（会话存在内存里）。');
+console.log('  重启后这个口令会打印在启动横幅里，忘了就往上翻。');
 console.log('');
