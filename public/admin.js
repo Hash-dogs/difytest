@@ -876,17 +876,37 @@
     }
   }
 
+  /** 奖级 → 徽章配色 class */
+  function tierClass(r) {
+    if (r.blank || r.awardPending) return '';
+    return { 一等奖: 'is-gold', 二等奖: 'is-silver', 三等奖: 'is-bronze' }[r.award] || '';
+  }
+
+  /**
+   * 这一行的名次是**怎么定下来的**。
+   *
+   * 《评选方案》规定最终得分四舍五入保留 2 位小数，所以同分是常态；
+   * 两行都显示 4.63 却一前一后，不给说法现场就会以为排错了。
+   */
+  function tieNote(r, data) {
+    if (r.blank) return '';
+    if (r.needsVote) return '四条顺位全同，需评委组投票定名次（系统不代劳）';
+    if (!r.tieBreakLevel) return '';
+    const hit = (data.tieBreak || []).find((c) => c.level === r.tieBreakLevel);
+    const what = hit ? `${hit.name}（${hit.weight}%）原始均分` : '全部评委不去分的加权总分';
+    return `总分与另一位相同，按第 ${r.tieBreakLevel} 顺位「${what}」区分`;
+  }
+
   function renderResults(data) {
-    const dims = data.dimensions;
     const rows = data.rows;
-    const scored = rows.filter((r) => !r.blank);
     const totalBallots = rows.reduce((s, r) => s + r.n, 0);
 
-    // 横幅：只陈述当前状态，不再展开说明为什么不能提前公布
+    // 横幅：只陈述当前状态，不再展开说明为什么不能提前公布。
+    // 比赛没结束时奖级只是**暂定** —— 后面还有作品上场，名次随时会变，得说清楚。
     const banner = $('result-banner');
     if (data.phase === 'open') {
       banner.className = 'result-banner is-live';
-      banner.textContent = `比赛进行中（已收 ${totalBallots} 份评分）`;
+      banner.textContent = `比赛进行中（已收 ${totalBallots} 份评分）· 名次与奖级为暂定`;
     } else {
       banner.className = 'result-banner is-closed';
       banner.textContent = `投票已结束（共 ${totalBallots} 份评分）`;
@@ -907,24 +927,31 @@
 
     // 概要行：只呈现当前结果本身，不讲解计分规则（规则见 Excel 的「计分说明」页）
     const thinList = rows.filter((r) => r.thin);
+    const voteList = rows.filter((r) => r.needsVote);
     const sup = data.superseded || [];
     $('result-meta').innerHTML =
       `共 <b>${rows.length}</b> 位 · 有效评分 <b>${totalBallots}</b> 份` +
       (thinList.length
         ? ` · <span class="flag-warn">⚠️ 第 ${thinList.map((r) => r.seq).join('、')} 位票数不超过 2 张，结论不可靠</span>`
         : '') +
+      (voteList.length
+        ? `<br /><span class="flag-warn">⚠️ 第 ${voteList.map((r) => r.seq).join('、')} 位四条顺位全同，需评委组投票定名次</span>`
+        : '') +
       (sup.length
         ? `<br /><span class="hint">已作废（被重开顶掉）：第 ${sup.map((s) => s.seq).join('、')} 位，不计入排名。</span>`
         : '');
 
     // 名次表
+    //
+    // ⚠️ 这里**不再列五个维度各自的均分**：现场公布时要让人一眼看到名次，
+    //    维度明细在「明细」页和 Excel 的「维度明细」工作表里，各归各位。
     const thead = $('rank-table').querySelector('thead');
     thead.innerHTML =
       '<tr>' +
       '<th class="col-rank">名次</th>' +
+      '<th class="col-award">奖级</th>' +
       '<th>演讲者</th>' +
       '<th>项目</th>' +
-      dims.map((d) => `<th class="num-cell">${esc(d.name)}<br /><span style="font-weight:400">${esc(d.weight)}%</span></th>`).join('') +
       '<th class="num-cell">加权总分</th>' +
       '<th class="num-cell">票数</th>' +
       '</tr>';
@@ -932,36 +959,49 @@
     const tbody = $('rank-table').querySelector('tbody');
     tbody.innerHTML = rows
       .map((r) => {
-        const tied = !r.blank && scored.filter((o) => o.u === r.u).length > 1;
-        const rankCell = r.blank
-          ? '<span class="rank-badge">—</span>'
-          : `<span class="rank-badge ${tied ? 'is-tie' : r.rank === 1 ? 'is-top' : ''}">${r.rank}</span>`;
+        const tier = tierClass(r);
 
-        const marginCells = dims
-          .map((d) => {
-            const info = r.details[d.id] || {};
-            // 两种「这个数字只靠一张票」的情况，成因不同，标签必须分开：
-            //   single        —— 真的只收到 1 票
-            //   trimmedToOne  —— 收到 3 票，去一高一低后只剩 1 票
-            let mark = '';
-            if (info.single) {
-              mark = ' <span class="flag-warn" title="这一维度只收到 1 票，等于由一位评委决定">仅1票</span>';
-            } else if (info.trimmedToOne) {
-              mark =
-                ' <span class="flag-warn" title="收到 3 票，去掉一个最高和一个最低后只剩 1 票，等于由中间那位评委决定">去分后剩1票</span>';
-            }
-            const v = r.margins[d.id];
-            return `<td class="num-cell">${v === null || v === undefined ? '—' : fmt2(v)}${mark}</td>`;
-          })
-          .join('');
+        // 名次徽章：并列待投票的单独着色，其余按奖级着色（金/银/铜）
+        const badge = ['rank-badge', r.blank ? '' : 'is-big', r.needsVote ? 'is-vote' : '', tier]
+          .filter(Boolean)
+          .join(' ');
+        const rankCell = r.blank ? '<span class="rank-badge">—</span>' : `<span class="${badge}">${r.rank}</span>`;
+
+        // 「这个分数只靠一两张票」原本挂在维度格上，维度列没了之后挪到演讲者这格 ——
+        // 它们本来就是**场次级**的属性，挂在这里比挂在某一维度上更准确
+        const flags = [];
+        if (r.thin) {
+          flags.push('<span class="flag-warn" title="本场有效票数不超过 2 张，去分保护失效，结论不可靠">薄数据</span>');
+        }
+        if (r.trim && r.trim.single) {
+          flags.push('<span class="flag-warn" title="本场只收到 1 张票，等于由一位评委决定">仅1票</span>');
+        }
+        if (r.trim && r.trim.trimmedToOne) {
+          flags.push(
+            '<span class="flag-warn" title="本场收到 3 张票，去掉一个最高和一个最低总分后只剩中间那一位，等于由他一个人决定">去分后剩1票</span>'
+          );
+        }
+
+        const awardCell = r.blank
+          ? '—'
+          : r.awardPending
+            ? `<span class="award-pending">${esc(r.awardPending)}</span>`
+            : `<span class="award ${tier}">${esc(r.award)}</span>`;
+
+        // 同分被顺位分开了：把「凭什么他排前面」写在分数旁边。
+        // 最终得分取整到 2 位小数之后同分是常态，不说清楚现场会以为排错了。
+        const note = tieNote(r, data);
+        const scoreCell = r.blank
+          ? '—'
+          : `${fmt2(r.total)}${note ? ` <span class="tie-note" title="${esc(note)}">同分</span>` : ''}`;
 
         return `
           <tr${r.blank ? ' style="opacity:.55"' : ''}>
             <td class="col-rank">${rankCell}</td>
-            <td>${esc(r.name)}${r.thin ? ' <span class="flag-warn">薄数据</span>' : ''}</td>
+            <td class="col-award">${awardCell}</td>
+            <td>${esc(r.name)}${flags.length ? ' ' + flags.join(' ') : ''}</td>
             <td>${esc(r.project)}</td>
-            ${marginCells}
-            <td class="total-cell">${r.blank ? '—' : fmt2(r.total)}</td>
+            <td class="total-cell">${scoreCell}</td>
             <td class="num-cell">${r.n}${r.submitted !== r.n ? ' ⚠️' : ''}</td>
           </tr>`;
       })
@@ -982,13 +1022,19 @@
   /* ------------------------------ 评分明细 ------------------------------ */
 
   /**
-   * 每位评委（登录码）× 每场 × 每个维度的打分矩阵。
+   * 每位评委（登录码）× 每个维度的打分明细 —— 一张整宽的矩阵。
    *
    * ⚠️ 这张表之所以存在，是因为 2026-09-18 起选票带 code 列 —— 见 src/db.js 文件头。
    *    在此之前选票与登录码无任何关联键，这张表在结构上就画不出来。
    *
-   * 刻意**不参与 20 秒自动刷新**：表格很宽，重建 DOM 会把横向滚动位置冲掉。
-   * 主持人手动点「刷新」即可。
+   * 布局：**一张表**吃掉整个页宽（不是一人一张小卡片并排）。每位演讲者一段：
+   * 先一行跨列的「姓名 - 项目名」，随后是这位演讲者的评委行。
+   * 行 = 登录码，列 = 维度，末列小计。
+   *
+   * 表头**钉在顶部**：整张表只有这一个滚动容器，滚轮走多远，「哪一列是哪个维度」
+   * 都还在眼前 —— 这正是把所有人放进同一张表、而不是拆成多张各自滚动的原因。
+   *
+   * 刻意**不参与 20 秒自动刷新**：重建 DOM 会把滚动位置冲掉。主持人手动点「刷新」。
    */
   async function loadDetail() {
     try {
@@ -1010,6 +1056,7 @@
 
     const thead = $('detail-table').querySelector('thead');
     const tbody = $('detail-table').querySelector('tbody');
+    const span = dims.length + 2; // 登录码 + 各维度 + 小计
 
     if (!rounds.length) {
       thead.innerHTML = '';
@@ -1017,64 +1064,59 @@
       return;
     }
 
-    // 交替底色按「场次」分组，让相邻演讲者的列块一眼能分开
-    const g = (i) => 'g' + (i % 2);
+    thead.innerHTML =
+      '<tr><th class="dt-code">登录码</th>' +
+      dims.map((d) => `<th class="dt-dim">${esc(d.name)}</th>`).join('') +
+      '<th class="dt-sub">小计</th></tr>';
 
-    // 表头两行：第一行按演讲者跨列合并，第二行是维度名
-    let headTop = '<tr><th class="dt-code" rowspan="2">登录码</th>';
-    let headBottom = '<tr>';
-    rounds.forEach((r, i) => {
-      headTop += `<th class="dt-group ${g(i)}" colspan="${dims.length + 1}">第 ${r.seq} 位 · ${esc(r.name)}</th>`;
-      dims.forEach((d) => {
-        headBottom += `<th class="dt-dim ${g(i)}">${esc(d.name)}</th>`;
-      });
-      headBottom += `<th class="dt-sub ${g(i)}">小计</th>`;
-    });
-    thead.innerHTML = headTop + '</tr>' + headBottom + '</tr>';
+    // 每位评委的明细按 roundId 建索引，避免在演讲者的循环里反复 find
+    const indexed = judges.map((j) => ({
+      judge: j,
+      byRound: new Map(j.rounds.map((x) => [x.roundId, x])),
+    }));
 
-    const rowsHtml = judges
-      .map((j) => {
-        const perRound = new Map(j.rounds.map((x) => [x.roundId, x]));
-        const meta = j.revoked
-          ? '<span class="flag-warn">已作废</span>'
-          : `已评 ${j.roundsSubmitted} 位`;
+    // 没有签发过任何登录码时，每位演讲者下面都要有一句交代，否则只有一行光秃秃的名字
+    const noCodes = `<tr class="empty-row"><td colspan="${span}">还没有签发任何登录码。</td></tr>`;
 
-        let tds = `<td class="dt-code">${esc(j.code)}<br /><span class="dt-meta">${meta}</span></td>`;
+    tbody.innerHTML = rounds
+      .map((r) => {
+        // 段首跨列行：姓名 - 项目名。跨整行，所以读的时候不会把它认成某一位评委
+        const nameRow = `<tr class="dt-name-row"><td colspan="${span}"><span class="dt-name">${esc(
+          r.name
+        )}</span>${
+          r.project
+            ? `<span class="dt-dash"> - </span><span class="dt-project">${esc(r.project)}</span>`
+            : ''
+        }</td></tr>`;
 
-        rounds.forEach((r, i) => {
-          const cls = g(i);
-          const cell = perRound.get(r.roundId);
-          dims.forEach((d) => {
-            const v = cell ? cell.scores[d.id] : undefined;
+        const body = indexed
+          .map(({ judge: j, byRound }) => {
+            const cell = byRound.get(r.roundId);
+
+            // 登录码列只留码本身。原来还挂一行「已评 N 位」，在整宽表里每一个码下面
+            // 都重复一遍，属于噪音；弃权与否看「—」就行
+            let tds = `<td class="dt-code">${esc(j.code)}${
+              j.revoked ? ' <span class="flag-warn">已作废</span>' : ''
+            }</td>`;
+            dims.forEach((d) => {
+              const v = cell ? cell.scores[d.id] : undefined;
+              tds +=
+                v === undefined
+                  ? '<td class="dt-cell dt-miss">—</td>'
+                  : `<td class="dt-cell">${v}</td>`;
+            });
             tds +=
-              v === undefined
-                ? `<td class="dt-cell dt-miss ${cls}">—</td>`
-                : `<td class="dt-cell ${cls}">${v}</td>`;
-          });
-          tds +=
-            cell && cell.total !== null && cell.total !== undefined
-              ? `<td class="dt-sub ${cls}">${fmt2(cell.total)}</td>`
-              : `<td class="dt-sub dt-miss ${cls}">—</td>`;
-        });
+              cell && cell.total !== null && cell.total !== undefined
+                ? `<td class="dt-sub">${fmt2(cell.total)}</td>`
+                : '<td class="dt-sub dt-miss">—</td>';
 
-        return `<tr>${tds}</tr>`;
+            return `<tr>${tds}</tr>`;
+          })
+          .join('');
+
+        return nameRow + (body || noCodes);
       })
       .join('');
-
-    // 末行：去分后的均分，作为逐格对照的基准
-    let avg = '<td class="dt-code dt-avg">去分后均分</td>';
-    rounds.forEach((r, i) => {
-      const cls = g(i);
-      dims.forEach((d) => {
-        const v = r.margins[d.id];
-        avg += `<td class="dt-avg ${cls}">${v === null || v === undefined ? '—' : fmt2(v)}</td>`;
-      });
-      avg += `<td class="dt-avg dt-sub ${cls}">${r.blank ? '—' : fmt2(r.total)}</td>`;
-    });
-
-    tbody.innerHTML =
-      (rowsHtml || '<tr class="empty-row"><td>还没有签发任何登录码。</td></tr>') +
-      `<tr class="dt-avg-row">${avg}</tr>`;
   }
 
   $('btn-refresh-detail').addEventListener('click', loadDetail);

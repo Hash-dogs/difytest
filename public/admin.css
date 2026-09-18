@@ -583,8 +583,14 @@
 
 .rank-table th.col-rank,
 .rank-table td.col-rank {
-  width: 62px;
+  width: 76px;
   text-align: center;
+}
+
+.rank-table th.col-award,
+.rank-table td.col-award {
+  width: 108px;
+  white-space: nowrap;
 }
 
 .rank-badge {
@@ -601,20 +607,94 @@
   color: var(--text-dim);
 }
 
-.rank-badge.is-top {
-  background: var(--accent);
-  color: var(--accent-fg);
+/* 名次是要「突出」的东西：放大、按奖级着色。
+   min-width 与 height 必须一起放，否则 border-radius:50% 会把两位数压成椭圆。
+   三档颜色走 common.css 里的奖级变量（亮/暗主题各有一套）。 */
+.rank-badge.is-big {
+  min-width: 32px;
+  height: 32px;
+  font-size: 16px;
+  font-weight: 800;
+  padding: 0 9px;
 }
 
-.rank-badge.is-tie {
+.rank-badge.is-gold {
+  background: var(--gold-soft);
+  color: var(--gold);
+  border: 2px solid var(--gold-line);
+}
+
+.rank-badge.is-silver {
+  background: var(--silver-soft);
+  color: var(--silver);
+  border: 2px solid var(--silver-line);
+}
+
+.rank-badge.is-bronze {
+  background: var(--bronze-soft);
+  color: var(--bronze);
+  border: 2px solid var(--bronze-line);
+}
+
+/* 四条顺位全同 → 并列待评委组投票。用告警色，别和「已定名次」混在一起 */
+.rank-badge.is-vote {
   background: var(--warn-soft);
   color: var(--warn);
+  border: 2px dashed var(--warn);
+}
+
+.award {
+  font-weight: 650;
+}
+
+.award.is-gold {
+  color: var(--gold);
+}
+
+.award.is-silver {
+  color: var(--silver);
+}
+
+.award.is-bronze {
+  color: var(--bronze);
+}
+
+/* 并列组横跨奖级边界 —— 只能并列显示两个候选，不替评委组拍板 */
+.award-pending {
+  color: var(--warn);
+  font-weight: 650;
+  font-size: 12.5px;
+  white-space: normal;
+}
+
+/* 总分取整到 2 位小数之后同分是常态，被顺位分开的行给个记号，
+   鼠标悬停能看到是第几顺位、按哪个维度分的 */
+.tie-note {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  color: var(--text-faint);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 1px;
+  cursor: help;
 }
 
 .num-cell {
   text-align: right;
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
+}
+
+/* ⚠️ 必须单独写这一条：`.grid th` 的特异度是 (0,1,1)，压过 `.num-cell` (0,1,0)，
+   于是表头会落成 text-align:left，而数据格是 right —— 数字贴着列的右边、
+   表头却贴着列的左边，中间隔着大半个列宽，看着就像两列没对齐。
+   受影响的三处：结果表「加权总分 / 票数」、场次表「已收 / 应到」、登录码表「已评位数」。 */
+.grid th.num-cell {
+  text-align: right;
 }
 
 .total-cell {
@@ -768,113 +848,115 @@
 .danger-zone .btn {
   margin-top: 6px;
 }
+/* ========== 评分明细：一张整宽的矩阵（2026-09-18 第二次改版） ========== */
 
-/* ================= 评分明细矩阵（2026-09-18） ================= */
-
+/* 整张表只有一个滚动容器 —— 表头要钉在「这个容器」的顶部。
+   不能靠整页滚动来做：.topbar 自己就是 position:sticky，两者会叠在一起。 */
 .detail-wrap {
   overflow: auto;
-  max-height: 72vh;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  /* 宽表横向滚动时不要连带整页滚动 */
+  max-height: 74vh;
+  /* 滚到底不要连带整页滚 */
   overscroll-behavior: contain;
 }
 
 .detail-table {
+  /* 定死式布局：列宽由表头那一行的宽度决定，上下必然对齐（图片里那种上下错位不会出现），
+     维度名换行而不是把表撑宽 */
+  table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
+  width: 100%;
+  /* 窄到 760px 以下才开始横向滚；登录码列会钉在最左。
+     再窄下去列宽就没法看了（维度名会被折成一列字） */
+  min-width: 760px;
   font-size: 13px;
-  width: max-content;
-  min-width: 100%;
+  font-variant-numeric: tabular-nums;
 }
 
 .detail-table th,
 .detail-table td {
+  padding: 6px 10px;
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
-  padding: 6px 10px;
-  white-space: nowrap;
   text-align: center;
-  font-variant-numeric: tabular-nums;
+  vertical-align: middle;
 }
 
-/* ---- 表头：两行，一起冻结在顶部 ---- */
-
-.detail-table thead th {
-  position: sticky;
-  z-index: 2;
-  font-size: 12px;
-  font-weight: 650;
-  color: var(--text-dim);
+.detail-table th:last-child,
+.detail-table td:last-child {
+  border-right: 0;
 }
 
-.detail-table thead tr:first-child th {
-  top: 0;
-  height: 34px;
-  color: var(--text);
-}
-
-.detail-table thead tr:nth-child(2) th {
-  top: 34px;
-}
-
-.detail-table thead .dt-group {
-  border-bottom: 1px solid var(--border-strong);
-  letter-spacing: 0.02em;
-}
-
-/* ---- 交替底色：按场次分块，相邻演讲者一眼分开 ---- */
-
-.detail-table .g0 {
-  background: var(--surface);
-}
-
-.detail-table .g1 {
-  background: var(--surface-2);
-}
-
-.detail-table thead .g0 {
-  background: var(--surface-2);
-}
-
-.detail-table thead .g1 {
-  background: var(--surface-3);
-}
-
-/* ---- 登录码列：横向滚动时固定在最左 ---- */
-
+/* 列宽：登录码与小计按内容定死，剩下的宽度五个维度**平分**。
+   「左右宽度给一个合适的值」—— 维度列拿到整页均分后的宽度，
+   9 个字的维度名（现有业务流程契合度）一行放得下，不再折行。 */
 .detail-table .dt-code {
   position: sticky;
   left: 0;
-  z-index: 1;
-  min-width: 118px;
+  z-index: 2;
+  width: 148px;
   text-align: left;
   font-family: var(--mono);
   font-weight: 700;
   font-size: 12.5px;
-  background: var(--surface-3);
   border-right: 1px solid var(--border-strong);
-  /* 横向滚到一半时，右侧会露出半个数字（例如只看见 "4.00" 的尾巴 "0"）。
-     加一道投影，让那道边界读起来是「下面还有内容」而不是渲染错位。 */
-  box-shadow: 6px 0 8px -6px rgba(15, 23, 42, 0.22);
+  /* 刻意**不给底色**：整页宽度下压根不会横向滚动，钉住是白钉的；
+     而一旦有底色，这一列就压掉了 .grid 的整行 hover 高亮，读长行时少了参照。
+     底色与投影只在真的会横向滚动的窄屏下加，见文件末尾的媒体查询。 */
+}
+
+.detail-table .dt-sub {
+  width: 108px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* ---- 表头：钉在顶部，滚轮上下走的时候坐标不动 ---- */
+
+.detail-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--surface-2);
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-dim);
+  /* 覆盖 .grid th 的 nowrap：列宽是定死的，宁可折行也不要撑宽 */
+  white-space: normal;
 }
 
 .detail-table thead .dt-code {
   z-index: 4;
-  background: var(--surface-3);
+  color: var(--text);
 }
 
-.dt-meta {
-  font-family: var(--font);
-  font-weight: 400;
-  font-size: 11px;
+/* ---- 段首行：姓名 - 项目名，跨整行 ---- */
+
+.detail-table .dt-name-row td {
+  padding: 8px 10px;
+  background: var(--surface-3);
+  border-top: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+  text-align: center;
+  font-size: 13.5px;
+}
+
+.dt-name {
+  font-weight: 700;
+}
+
+/* 「名字 - 项目名」里那一横：压淡，让它读起来是分隔符而不是内容 */
+.dt-dash {
   color: var(--text-faint);
+}
+
+.dt-project {
+  color: var(--text-dim);
 }
 
 /* ---- 单元格 ---- */
 
 .detail-table .dt-cell {
-  min-width: 46px;
   font-size: 14px;
 }
 
@@ -882,23 +964,29 @@
   color: var(--text-faint);
 }
 
-.detail-table .dt-sub {
-  font-weight: 700;
-  color: var(--accent);
-  min-width: 62px;
+/* 窄屏：表被压到 min-width 以下，横向滚起来了 —— 这时候登录码列必须钉住，
+   而且**必须有底色**（否则滑动时数字会从码底下面穿过去）。
+   断点取 860px：.main 左右各 20px 内边距，视口再窄容器就装不下 760px 的表了。 */
+@media (max-width: 860px) {
+  .detail-table .dt-code {
+    background: var(--surface-3);
+    /* 滚到一半时右侧会露出半个数字。加一道投影，让那道边界
+       读起来是「下面还有内容」而不是渲染错位 */
+    box-shadow: 6px 0 8px -6px rgba(15, 23, 42, 0.22);
+  }
+
+  .detail-table thead .dt-code {
+    background: var(--surface-2);
+  }
+
+  .detail-table .dt-name-row td {
+    font-size: 13px;
+  }
 }
 
-/* ---- 去分后均分那一行 ---- */
-
-.detail-table .dt-avg-row td {
-  border-top: 2px solid var(--border-strong);
-  background: var(--warn-soft);
-  font-weight: 700;
-  color: var(--text);
-}
-
-.detail-table .dt-avg-row .dt-code {
-  background: var(--warn-soft);
-  color: var(--text-dim);
-  font-family: var(--font);
+@media (max-width: 640px) {
+  .detail-table .dt-code {
+    width: 120px;
+    font-size: 11.5px;
+  }
 }
