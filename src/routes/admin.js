@@ -888,6 +888,66 @@ router.get('/api/admin/results.xlsx', requireAdmin, (req, res) => {
 /* ---------------------------- 导出明细 ----------------------------- */
 
 /**
+ * Excel 对工作表名有硬限制：≤31 字符、不能含 `: \ / ? * [ ]`、不能重名、不能为空。
+ * 演讲者姓名是用户可编辑的，不清洗的话导出的文件 Excel 会直接拒绝打开。
+ */
+function safeSheetName(raw, used) {
+  const cleaned = String(raw || '')
+    .replace(/[:\\/?*[\]]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const base = (cleaned || '未命名').slice(0, 28);
+  let name = base;
+  let n = 2;
+  while (used.has(name)) {
+    name = `${base.slice(0, 26)}(${n})`;
+    n += 1;
+  }
+  used.add(name);
+  return name;
+}
+
+/**
+ * 明细报表：**一位演讲者一张工作表**，表内每位评委一行、每个维度一列。
+ *
+ * 比一张大矩阵好用：演讲者一多，矩阵会横向铺到几十列，非来回滚动不可；
+ * 分表之后每张表固定「维度数 + 2」列，一屏看得完，也方便单独发给某位演讲者核对。
+ */
+function buildDetailWorkbook(judgeDetail, roundRows, dimList) {
+  // 按出场顺序排，工作表顺序与比赛流程一致
+  const cols = roundRows.slice().sort((a, b) => a.seq - b.seq);
+  const header = ['登录码', ...dimList.map((d) => d.name), '小计'];
+  const usedNames = new Set();
+
+  return cols.map((r) => {
+    const rows = [header];
+
+    // 所有签发过的登录码都列出来；没交的填「—」，这样「谁弃权了」一眼可见
+    for (const j of judgeDetail || []) {
+      const cell = j.rounds.find((x) => x.roundId === r.roundId);
+      const line = [j.code];
+      for (const d of dimList) {
+        const v = cell ? cell.scores[d.id] : undefined;
+        line.push(v === undefined ? '—' : v);
+      }
+      line.push(cell && cell.total !== null ? Number(cell.total.toFixed(4)) : '—');
+      rows.push(line);
+    }
+
+    // 末行均分，作为逐格对照的基准
+    const avg = ['（均分）'];
+    for (const d of dimList) {
+      const v = r.margins[d.id];
+      avg.push(v === null || v === undefined ? '—' : Number(v.toFixed(4)));
+    }
+    avg.push(r.blank ? '—' : Number(r.total.toFixed(4)));
+    rows.push(avg);
+
+    return { name: safeSheetName(`${r.seq}. ${r.name}`, usedNames), rows };
+  });
+}
+
+/**
  * 明细报表：**只有逐条打分**，不含汇总、不含维度的统计分布、不含计分说明。
  *
  * 与 /results.xlsx（结果报表）是两份不同的东西 —— 明细页该导出明细，
@@ -908,9 +968,7 @@ router.get('/api/admin/detail.xlsx', requireAdmin, (req, res) => {
     return bad(res, '还没有开始任何一场，没有明细可导出。', 409, 'no_data');
   }
 
-  const sheets = [
-    { name: '评分明细', rows: buildJudgeDetailRows(judgeDetail, result.rounds, config.dimensions) },
-  ];
+  const sheets = buildDetailWorkbook(judgeDetail, result.rounds, config.dimensions);
 
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
   const filename = `评分明细-${stamp}.xlsx`;

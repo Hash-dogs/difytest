@@ -452,29 +452,38 @@ async function checkJudgeDetail() {
   check('明细报表导出 → 200 且是 ZIP', detailBook.status === 200 && detailBook.isZip, String(detailBook.status));
 
   check('结果报表含汇总与计分说明', resultBook.sheets.includes('汇总') && resultBook.sheets.includes('计分说明'), resultBook.sheets.join(','));
-  check('★ 明细报表只有一张表', detailBook.sheets.length === 1, detailBook.sheets.join(','));
-  check('★ 明细报表的表叫「评分明细」', detailBook.sheets[0] === '评分明细', detailBook.sheets[0]);
   check(
     '★ 明细报表不含汇总 / 维度明细 / 计分说明',
     !detailBook.sheets.some((n) => /汇总|维度明细|计分说明/.test(n)),
     detailBook.sheets.join(',')
   );
 
-  // 明细表头必须逐场逐维度铺开，而不是只给个总数
+  // ---- ★ 明细报表：一位演讲者一张工作表 ----
+  const roundCount = (await api('GET', '/api/admin/results')).data.rows.length;
+  check('★ 明细报表的表数 == 演讲者数', detailBook.sheets.length === roundCount, `${detailBook.sheets.length} vs ${roundCount}`);
+  check(
+    '★ 每张工作表按「序号. 姓名」命名',
+    detailBook.sheets.every((n) => /^\d+\. .+/.test(n)),
+    detailBook.sheets.join(' | ')
+  );
+  check('★ 工作表名 ≤31 字符（Excel 硬限制）', detailBook.sheets.every((n) => n.length <= 31), detailBook.sheets.map((n) => n.length).join(','));
+  check(
+    '★ 工作表名不含 Excel 禁用字符 : \\ / ? * [ ]',
+    detailBook.sheets.every((n) => !/[:\\/?*[\]]/.test(n)),
+    detailBook.sheets.join(' | ')
+  );
+  check('★ 工作表名互不重复', new Set(detailBook.sheets).size === detailBook.sheets.length);
+
+  // 每张表的表头必须是「登录码 + 逐维度 + 小计」，而不是只给个总数
   const headerCells = [...detailBook.xml.matchAll(/<t[^>]*>([^<]*)<\/t>/g)].map((m) => m[1]);
   check('★ 明细报表的表头含「登录码」', headerCells.includes('登录码'));
+  check('★ 明细报表的表头含「小计」', headerCells.includes('小计'));
   check(
     '★ 明细报表的表头逐维度展开',
-    dimensions.every((d) => headerCells.some((h) => h.includes(d.name))),
-    headerCells.filter((h) => /场/.test(h)).slice(0, 3).join(' / ')
+    dimensions.every((d) => headerCells.includes(d.name)),
+    headerCells.slice(0, 8).join(' / ')
   );
-  check('明细报表末行是均分', headerCells.includes('（去分后均分）'));
-
-  // 一场都没开时明细报表该拒绝，而不是导出一张空表
-  const before = await api('GET', '/api/admin/rounds');
-  if (before.data.rounds.length === 0) {
-    check('没有场次时明细报表拒绝导出', true, '（本用例在清空后才有意义，跳过）');
-  }
+  check('每张表底部有均分行', headerCells.filter((h) => h === '（均分）').length === roundCount, String(headerCells.filter((h) => h === '（均分）').length));
 }
 
 /* ============================ 七、重开与重置 ============================ */

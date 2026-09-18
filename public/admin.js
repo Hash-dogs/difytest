@@ -653,10 +653,10 @@
     lastRoundsSig = sig;
 
     // ---- 顶部控制条：主持人盯着这一块决定什么时候切下一位 ----
-    $('live-name').textContent = live ? `第 ${live.seq} 场 · ${live.name}` : '尚未开始';
+    $('live-name').textContent = live ? `第 ${live.seq} 位 · ${live.name}` : '尚未开始';
     $('live-count').textContent = live
       ? `已收 ${live.submitted} / ${judgeCount} 位评委`
-      : `共 ${data.rounds.length} 场已结束 · 应到 ${judgeCount} 位评委`;
+      : `共 ${data.rounds.length} 位已结束 · 应到 ${judgeCount} 位评委`;
 
     // 全部演讲者都上过场之后，advance 会返回 no_more_rounds —— 提前禁用并说明
     const advanceBtn = $('btn-advance');
@@ -742,7 +742,7 @@
             method: 'POST',
             body: JSON.stringify({}),
           });
-          toast(`已开始第 ${data.round.seq} 场：${data.round.name}`);
+          toast(`已开始第 ${data.round.seq} 位：${data.round.name}`);
           loadRounds();
         } catch (err) {
           toast(err.message || '切换失败', true);
@@ -767,7 +767,7 @@
             method: 'POST',
             body: JSON.stringify({ contestantId }),
           });
-          toast(`已开始第 ${data.round.seq} 场：${data.round.name}`);
+          toast(`已开始第 ${data.round.seq} 位：${data.round.name}`);
           loadRounds();
         } catch (err) {
           toast(err.message || '切换失败', true);
@@ -909,12 +909,12 @@
     const thinList = rows.filter((r) => r.thin);
     const sup = data.superseded || [];
     $('result-meta').innerHTML =
-      `共 <b>${rows.length}</b> 场 · 有效评分 <b>${totalBallots}</b> 份` +
+      `共 <b>${rows.length}</b> 位 · 有效评分 <b>${totalBallots}</b> 份` +
       (thinList.length
-        ? ` · <span class="flag-warn">⚠️ 第 ${thinList.map((r) => r.seq).join('、')} 场票数不超过 2 张，结论不可靠</span>`
+        ? ` · <span class="flag-warn">⚠️ 第 ${thinList.map((r) => r.seq).join('、')} 位票数不超过 2 张，结论不可靠</span>`
         : '') +
       (sup.length
-        ? `<br /><span class="hint">已作废（被重开顶掉）：第 ${sup.map((s) => s.seq).join('、')} 场，不计入排名。</span>`
+        ? `<br /><span class="hint">已作废（被重开顶掉）：第 ${sup.map((s) => s.seq).join('、')} 位，不计入排名。</span>`
         : '');
 
     // 名次表
@@ -926,7 +926,7 @@
       '<th>项目</th>' +
       dims.map((d) => `<th class="num-cell">${esc(d.name)}<br /><span style="font-weight:400">${esc(d.weight)}%</span></th>`).join('') +
       '<th class="num-cell">加权总分</th>' +
-      '<th class="num-cell">本场票数</th>' +
+      '<th class="num-cell">票数</th>' +
       '</tr>';
 
     const tbody = $('rank-table').querySelector('tbody');
@@ -1017,11 +1017,11 @@
     let headTop = '<tr><th class="dt-code" rowspan="2">登录码</th>';
     let headBottom = '<tr>';
     rounds.forEach((r, i) => {
-      headTop += `<th class="dt-group ${g(i)}" colspan="${dims.length + 1}">第 ${r.seq} 场 · ${esc(r.name)}</th>`;
+      headTop += `<th class="dt-group ${g(i)}" colspan="${dims.length + 1}">第 ${r.seq} 位 · ${esc(r.name)}</th>`;
       dims.forEach((d) => {
         headBottom += `<th class="dt-dim ${g(i)}">${esc(d.name)}</th>`;
       });
-      headBottom += `<th class="dt-sub ${g(i)}">本场小计</th>`;
+      headBottom += `<th class="dt-sub ${g(i)}">小计</th>`;
     });
     thead.innerHTML = headTop + '</tr>' + headBottom + '</tr>';
 
@@ -1030,7 +1030,7 @@
         const perRound = new Map(j.rounds.map((x) => [x.roundId, x]));
         const meta = j.revoked
           ? '<span class="flag-warn">已作废</span>'
-          : `已交 ${j.roundsSubmitted} 场`;
+          : `已评 ${j.roundsSubmitted} 位`;
 
         let tds = `<td class="dt-code">${esc(j.code)}<br /><span class="dt-meta">${meta}</span></td>`;
 
