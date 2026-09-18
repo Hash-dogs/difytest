@@ -556,7 +556,63 @@ function computeCurrentResults() {
       ballots: row.n,
     }));
 
-  return { config, all, supersededIds, submittedByRound, result, mismatches };
+  return { config, all, supersededIds, submittedByRound, result, mismatches, judgeDetail: buildJudgeDetail(config.dimensions) };
+}
+
+/**
+ * 每位评委（登录码）× 每场 × 每个维度的打分明细。
+ *
+ * ⚠️ 这是「选票不再匿名」的直接产物：`ballot.code` 让选票能归属到具体登录码。
+ *    2026-09-18 之前的结构**不允许**这件事（见 src/db.js 文件头与 git 提交 e51d91a）。
+ *
+ * 名单取自 invite 表而不是选票，这样**一次都没交过的码也会出现在表里**——
+ * 否则「谁弃权了」反而看不出来。已作废的码也保留，带 revoked 标记。
+ */
+function buildJudgeDetail(dimensionList) {
+  const scoreRows = db
+    .prepare(
+      `SELECT b.code AS code, s.round_id AS round_id,
+              s.dimension_id AS dimension_id, s.value AS value
+         FROM ballot b
+         JOIN score s ON s.ballot_id = b.ballot_id`
+    )
+    .all();
+
+  const byCode = new Map(); // code -> Map(roundId -> { [dimId]: value })
+  for (const r of scoreRows) {
+    let perRound = byCode.get(r.code);
+    if (!perRound) byCode.set(r.code, (perRound = new Map()));
+    let cell = perRound.get(r.round_id);
+    if (!cell) perRound.set(r.round_id, (cell = {}));
+    cell[r.dimension_id] = r.value;
+  }
+
+  return listInvites.all().map((inv) => {
+    const perRound = byCode.get(inv.code) || new Map();
+    const roundsOut = [...perRound.entries()]
+      .map(([roundId, scores]) => {
+        let weighted = 0;
+        let complete = true;
+        for (const d of dimensionList) {
+          const v = scores[d.id];
+          if (v === undefined) {
+            complete = false;
+            continue;
+          }
+          weighted += d.weight * v;
+        }
+        // 该评委给这一场打的加权分（他自己那一份，不是去分后的结果）
+        return { roundId, scores, total: complete ? weighted / 100 : null };
+      })
+      .sort((a, b) => a.roundId - b.roundId);
+
+    return {
+      code: inv.code,
+      revoked: !!inv.revoked,
+      roundsSubmitted: inv.rounds_submitted,
+      rounds: roundsOut,
+    };
+  });
 }
 
 router.get('/api/admin/results', requireAdmin, (req, res) => {
@@ -567,7 +623,7 @@ router.get('/api/admin/results', requireAdmin, (req, res) => {
     return bad(res, err.message, 500, 'scoring_failed');
   }
 
-  const { config, all, supersededIds, submittedByRound, result, mismatches } = computed;
+  const { config, all, supersededIds, submittedByRound, result, mismatches, judgeDetail } = computed;
   const judgeCount = judgeCountOf();
 
   res.json({
@@ -589,6 +645,8 @@ router.get('/api/admin/results', requireAdmin, (req, res) => {
     superseded: all
       .filter((r) => supersededIds.has(r.id))
       .map((r) => ({ roundId: r.id, seq: r.seq, name: r.name, submitted: r.submitted })),
+    // 每位评委对每位演讲者每个维度的打分（选票带 code 之后的直接产物）
+    judgeDetail,
     integrity: {
       ok: mismatches.length === 0,
       mismatches,
@@ -705,21 +763,67 @@ function buildResultSheets(data) {
     ['薄数据场次', thinText],
     ['', ''],
     [
-      '⚠️ 匿名说明',
-      '本表不含、也无法推算「哪位评委给谁打了多少分」。登录码与选票在数据库层面没有任何关联键，' +
-        '系统只记录「某个登录码在第几场提交过」，不记录「提交了什么」。这是设计约定，不是导出时的取舍。',
+      '⚠️ 关于评委身份（2026-09-18 起的变化）',
+      '选票会记录提交它的登录码，因此**本表可以还原「哪位评委给谁打了多少分」**，' +
+        '「评委明细」页就是这份数据。这是活动方的明确选择，不是实现疏漏 —— ' +
+        '在此之前版本的设计是选票与登录码完全不可关联，那份设计已不再生效。',
     ],
     [
-      '⚠️ 必须如实告知的边界',
-      '① 如果某一场只有一位评委提交，那一场唯一的选票必然出自这位评委 —— 这是「一场一投 + 主持人随时切换」' +
-        '模式的固有性质，无法通过技术手段消除，因此本表对票数≤2 的场次逐条标注。' +
-        '② 系统记录了每个登录码的提交时刻，因此提交的先后顺序是可查的。选票本身没有任何时间戳，' +
-        '无法把某张票对应到某人，但在场次颗粒度上，先后顺序并非完全不可观察。',
+      '仍然不记录的信息',
+      '除登录码外，选票不写任何请求元数据：不记录评委的 IP、设备（User-Agent）或提交时刻。' +
+        '因此「谁投的」可查，但「从哪里投的」「用什么手机投的」查不到。',
+    ],
+    [
+      '⚠️ 需要如实告知评委的两点',
+      '① 本次打分**不是匿名的** —— 每张选票都能对应到发放的登录码。若评委此前被告知匿名，需要更正。' +
+        '② 登录码是一对一发放的，但系统无法验证「拿码的人就是本人」，代投在技术上不可识别。',
+    ],
+    [
+      '⚠️ 票数少时的读法',
+      '某一场若只有 1–2 位评委提交，该场成绩的参考价值很低（去分保护失效）；' +
+        '0 票的场次名次为空、不计入排名。这类场次在汇总页已标注。',
     ],
   ];
 
+  // ---- Sheet 4：评委明细（每位登录码 × 每场 × 每个维度）----
+  // 列按场次 seq 排，不用汇总页的排名顺序 —— 这张表是按比赛流程读的
+  const cols = rows.slice().sort((a, b) => a.seq - b.seq);
+
+  const judgeHeader = ['登录码', '状态'];
+  for (const r of cols) {
+    for (const d of dims) judgeHeader.push(`${r.seq}. ${r.name} · ${d.name}`);
+    judgeHeader.push(`${r.seq}. ${r.name} · 小计`);
+  }
+
+  const judgeRows = [judgeHeader];
+  for (const j of data.judgeDetail || []) {
+    const perRound = new Map(j.rounds.map((x) => [x.roundId, x]));
+    const line = [j.code, j.revoked ? '已作废' : '可用'];
+    for (const r of cols) {
+      const cell = perRound.get(r.roundId);
+      for (const d of dims) {
+        const v = cell ? cell.scores[d.id] : undefined;
+        line.push(v === undefined ? '—' : v); // 「—」= 这位评委这一场弃权
+      }
+      line.push(cell && cell.total !== null ? Number(cell.total.toFixed(4)) : '—');
+    }
+    judgeRows.push(line);
+  }
+
+  // 末行给出「去分后均分」，方便逐格对比某位评委是偏高还是偏低
+  const avgLine = ['（去分后均分）', ''];
+  for (const r of cols) {
+    for (const d of dims) {
+      const v = r.margins[d.id];
+      avgLine.push(v === null || v === undefined ? '—' : Number(v.toFixed(4)));
+    }
+    avgLine.push(r.blank ? '—' : Number(r.total.toFixed(4)));
+  }
+  judgeRows.push(avgLine);
+
   return [
     { name: '汇总', rows: summary },
+    { name: '评委明细', rows: judgeRows },
     { name: '维度明细', rows: detail },
     { name: '计分说明', rows: info },
   ];
@@ -733,7 +837,7 @@ router.get('/api/admin/results.xlsx', requireAdmin, (req, res) => {
     return bad(res, err.message, 500, 'scoring_failed');
   }
 
-  const { config, submittedByRound, result } = computed;
+  const { config, submittedByRound, result, judgeDetail } = computed;
 
   // 只有「全场次都空白」才拒绝导出；个别场次票少或没票不该挡住导出（PLAN §6.2）
   if (result.insufficient) {
@@ -744,6 +848,7 @@ router.get('/api/admin/results.xlsx', requireAdmin, (req, res) => {
     activityName: config.activityName,
     dimensions: config.dimensions,
     judgeCount: judgeCountOf(),
+    judgeDetail,
     lcm: result.lcm,
     rows: result.rounds.map((row) => ({
       ...row,

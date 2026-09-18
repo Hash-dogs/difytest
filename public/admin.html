@@ -46,6 +46,7 @@
           <button type="button" class="tab" data-tab="rounds">场次</button>
           <button type="button" class="tab" data-tab="invites">登录码</button>
           <button type="button" class="tab" data-tab="results">结果</button>
+          <button type="button" class="tab" data-tab="detail">明细</button>
           <button type="button" class="tab" data-tab="config">配置</button>
         </nav>
       </header>
@@ -281,6 +282,37 @@
             </table>
           </div>
 
+        </section>
+        <!-- ---------------------------- 明细 ---------------------------- -->
+        <section class="tab-panel" id="tab-detail" hidden>
+          <div class="panel-head">
+            <h2>评分明细</h2>
+            <div class="panel-head-actions">
+              <button type="button" class="btn btn-sm btn-primary" id="btn-export-detail">导出 Excel</button>
+              <button type="button" class="btn btn-sm" id="btn-refresh-detail">刷新</button>
+            </div>
+          </div>
+
+          <p class="hint">
+            每位评委（登录码）对每位演讲者每个维度的打分。横向滚动可看全部场次，登录码一列固定在最左。
+            <b>「—」表示这位评委这一场没有提交</b>（弃权）。
+            最下面一行是去掉一高一低后的均分，可以逐格对照，看某位评委整体偏高还是偏低。
+          </p>
+
+          <div id="detail-warning" hidden class="notice notice-warn" style="margin:12px 0">
+            <span class="notice-icon">👁️</span>
+            <span>
+              这张表能还原「谁给谁打了多少分」。<b>比赛期间请不要把屏幕转向评委或投屏</b> ——
+              一旦评委知道自己的打分会被逐条查看，后续场次的评分就可能不再独立。
+            </span>
+          </div>
+
+          <div class="table-wrap detail-wrap">
+            <table class="grid detail-table" id="detail-table">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </section>
       </main>
     </section>

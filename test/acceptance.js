@@ -89,8 +89,13 @@ async function preflight() {
 
 /* ============================ 一、匿名性结构检查 ============================ */
 
-function checkAnonymity() {
-  section('一、匿名性结构检查（直接读 db 文件）');
+/**
+ * ⚠️ 2026-09-18 起选票不再匿名：ballot 带 code 列，可以归属到具体登录码。
+ * 这一节原本检查的是「两表无任何关联键」，现在改为检查「结构没被改坏 + 数据最小化」。
+ * 旧的匿名约束在 git 提交 e51d91a 里可以查到。
+ */
+function checkSchema() {
+  section('一、结构与数据最小化检查（直接读 db 文件）');
 
   if (!fs.existsSync(DB_PATH)) {
     check('数据库文件存在', false, DB_PATH);
@@ -103,54 +108,38 @@ function checkAnonymity() {
   const sqlOf = (t) =>
     (db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name=?`).get(t) || {}).sql || '';
 
-  // ---- ballot：只允许一列、无时间戳 ----
-  const ballotCols = cols('ballot');
-  check('ballot 只有 ballot_id 一列', ballotCols.length === 1 && ballotCols[0] === 'ballot_id', ballotCols.join(','));
-  check('ballot 没有任何时间戳列', !ballotCols.some((c) => /time|_at$|date/i.test(c)));
-
-  // ---- score：列集合精确匹配，且不含 code / 时间戳 ----
-  const scoreCols = cols('score').sort().join(',');
+  // ---- 三张表的列集合必须精确相等 ----
+  check(
+    'ballot 列集合严格等于 {ballot_id, code}',
+    cols('ballot').sort().join(',') === 'ballot_id,code',
+    cols('ballot').join(',')
+  );
   check(
     'score 列集合严格等于 {ballot_id, round_id, dimension_id, value}',
-    scoreCols === 'ballot_id,dimension_id,round_id,value',
-    scoreCols
+    cols('score').sort().join(',') === 'ballot_id,dimension_id,round_id,value',
+    cols('score').join(',')
   );
-  check('score 不含 code / createdAt', !cols('score').includes('code') && !cols('score').includes('created_at'));
-
-  // ---- round_submission：列集合精确匹配、无 ballot_id ----
-  const subCols = cols('round_submission').sort().join(',');
   check(
     'round_submission 列集合严格等于 {round_id, code, submitted_at}',
-    subCols === 'code,round_id,submitted_at',
-    subCols
+    cols('round_submission').sort().join(',') === 'code,round_id,submitted_at',
+    cols('round_submission').join(',')
   );
-  check('round_submission 不含 ballot_id', !cols('round_submission').includes('ballot_id'));
+
+  // ---- 数据最小化：选票里除 code 外不许有请求元数据 ----
+  const meta = cols('ballot').filter((c) => !['ballot_id', 'code'].includes(c));
+  check('ballot 除 ballot_id/code 外没有别的列', meta.length === 0, meta.join(','));
+  check(
+    'ballot 不记录 IP / User-Agent / 时间戳',
+    !cols('ballot').some((c) => /(^|_)(ip|ua|agent|time|timestamp|created|updated|at)($|_)/i.test(c)),
+    cols('ballot').join(',')
+  );
 
   // ---- WITHOUT ROWID ----
   for (const t of ['ballot', 'score', 'round_submission']) {
     check(`${t} 建表语句含 WITHOUT ROWID`, /WITHOUT\s+ROWID/i.test(sqlOf(t)));
   }
 
-  // ---- ballot_id 不得出现在其它表里 ----
-  const tables = db
-    .prepare(`SELECT name FROM sqlite_master WHERE type='table'`)
-    .all()
-    .map((r) => r.name);
-  const leaky = tables
-    .filter((t) => t !== 'ballot' && t !== 'score')
-    .filter((t) => cols(t).includes('ballot_id'));
-  check('除 ballot/score 外没有表带 ballot_id', leaky.length === 0, leaky.join(','));
-
-  // ---- 不得存在指向 ballot 的外键 ----
-  const fkToBallot = [];
-  for (const t of tables) {
-    for (const fk of db.prepare(`PRAGMA foreign_key_list(${t})`).all()) {
-      if (fk.table === 'ballot') fkToBallot.push(t);
-    }
-  }
-  check('没有任何表建立指向 ballot 的外键', fkToBallot.length === 0, fkToBallot.join(','));
-
-  // ---- 视图 / 触发器可以绕过上述所有检查 ----
+  // ---- 视图 / 触发器可以绕过上述列集合检查 ----
   const extra = db.prepare(`SELECT type, name FROM sqlite_master WHERE type IN ('view','trigger')`).all();
   check('库里没有 view / trigger', extra.length === 0, extra.map((e) => `${e.type}:${e.name}`).join(','));
 
@@ -158,6 +147,34 @@ function checkAnonymity() {
   const nBallot = db.prepare('SELECT COUNT(*) AS n FROM ballot').get().n;
   const nSub = db.prepare('SELECT COUNT(*) AS n FROM round_submission').get().n;
   check('ballot 行数 == round_submission 行数（每场每码一张票）', nBallot === nSub, `${nBallot} vs ${nSub}`);
+
+  // ---- ★ 新增：选票确实能归属到登录码，且归属结果与提交记录一致 ----
+  const rows = db
+    .prepare(
+      `SELECT b.code AS ballot_code, s.round_id AS round_id, r.code AS sub_code
+         FROM ballot b
+         JOIN score s ON s.ballot_id = b.ballot_id
+         LEFT JOIN round_submission r ON r.round_id = s.round_id AND r.code = b.code
+        GROUP BY s.round_id, b.code`
+    )
+    .all();
+
+  check('★ 每张选票都能归属到一个登录码', rows.length > 0 && rows.every((r) => !!r.ballot_code));
+  check(
+    '★ 选票的归属与该码的提交记录一一对应',
+    rows.every((r) => r.sub_code === r.ballot_code),
+    rows.filter((r) => r.sub_code !== r.ballot_code).length + ' 条对不上'
+  );
+
+  // ---- ★ 每个 (码, 场次) 的组合只有一张票，不会重复计 ----
+  const dup = db
+    .prepare(
+      `SELECT b.code AS code, s.round_id AS rid, COUNT(DISTINCT b.ballot_id) AS n
+         FROM ballot b JOIN score s ON s.ballot_id = b.ballot_id
+        GROUP BY b.code, s.round_id HAVING n > 1`
+    )
+    .all();
+  check('★ 同一个码在同一场不会有多张选票', dup.length === 0, JSON.stringify(dup));
 
   db.close();
 }
@@ -376,6 +393,46 @@ async function checkResults(r1, r2) {
   check('xlsx 是 ZIP 结构（PK 头）', buf.length > 4 && buf[0] === 0x50 && buf[1] === 0x4b);
 }
 
+/* ============================ 六之二、评委明细 ============================ */
+
+/**
+ * 选票带 code 之后的新能力：结果里能列出「每个登录码 × 每场 × 每个维度」的分。
+ * 这一节同时充当回归保护 —— 它把这个能力钉死，谁把 code 列拿掉都会红。
+ */
+async function checkJudgeDetail() {
+  section('六之二、评委明细（选票带登录码之后的能力）');
+
+  const res = await api('GET', '/api/admin/results');
+  const detail = res.data.judgeDetail;
+
+  check('结果里带 judgeDetail', Array.isArray(detail), typeof detail);
+  check('明细覆盖所有签发过的登录码', detail.length >= codes.length, `${detail.length} vs ${codes.length}`);
+  check('明细按登录码排序且不重复', new Set(detail.map((d) => d.code)).size === detail.length);
+
+  // 找一个真的交过的码，逐格核对它交的分与接口返回是否一致
+  const submitted = detail.filter((d) => d.rounds.length > 0);
+  check('至少有一个码带明细', submitted.length > 0);
+
+  if (submitted.length) {
+    const j = submitted[0];
+    check('该码的明细里每个维度都有分', j.rounds.every((r) => Object.keys(r.scores).length > 0));
+
+    const first = j.rounds[0];
+    check('明细里的分数都在 1–5', Object.values(first.scores).every((v) => Number.isInteger(v) && v >= 1 && v <= 5));
+    check('明细里的维度数等于配置的维度数', Object.keys(first.scores).length === dimensions.length);
+    check('该场小计已算出', typeof first.total === 'number' && first.total > 0, String(first.total));
+
+    // 手算核对：Σ(权重 × 分) ÷ 100
+    const expect =
+      dimensions.reduce((s, d) => s + d.weight * first.scores[d.id], 0) / 100;
+    check('该场小计与手算一致', Math.abs(first.total - expect) < 1e-9, `${first.total} vs ${expect}`);
+  }
+
+  // 一次都没交的码也要出现在明细里，否则「谁完全没参与」就看不出来
+  const idle = detail.filter((d) => d.rounds.length === 0);
+  check('未提交过的码也列在明细中', detail.length === submitted.length + idle.length);
+}
+
 /* ============================ 七、重开与重置 ============================ */
 
 async function checkReopenAndReset(r1) {
@@ -480,7 +537,8 @@ async function checkRateLimit() {
     await checkResults(r1, r2);
     await checkReopenAndReset(r1);
     await checkPhase();
-    checkAnonymity();
+    await checkJudgeDetail();
+    checkSchema();
     await checkRateLimit();
   } catch (err) {
     console.error('\n执行中断：', err);

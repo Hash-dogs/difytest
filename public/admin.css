@@ -768,3 +768,137 @@
 .danger-zone .btn {
   margin-top: 6px;
 }
+
+/* ================= 评分明细矩阵（2026-09-18） ================= */
+
+.detail-wrap {
+  overflow: auto;
+  max-height: 72vh;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  /* 宽表横向滚动时不要连带整页滚动 */
+  overscroll-behavior: contain;
+}
+
+.detail-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+  width: max-content;
+  min-width: 100%;
+}
+
+.detail-table th,
+.detail-table td {
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 10px;
+  white-space: nowrap;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 表头：两行，一起冻结在顶部 ---- */
+
+.detail-table thead th {
+  position: sticky;
+  z-index: 2;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-dim);
+}
+
+.detail-table thead tr:first-child th {
+  top: 0;
+  height: 34px;
+  color: var(--text);
+}
+
+.detail-table thead tr:nth-child(2) th {
+  top: 34px;
+}
+
+.detail-table thead .dt-group {
+  border-bottom: 1px solid var(--border-strong);
+  letter-spacing: 0.02em;
+}
+
+/* ---- 交替底色：按场次分块，相邻演讲者一眼分开 ---- */
+
+.detail-table .g0 {
+  background: var(--surface);
+}
+
+.detail-table .g1 {
+  background: var(--surface-2);
+}
+
+.detail-table thead .g0 {
+  background: var(--surface-2);
+}
+
+.detail-table thead .g1 {
+  background: var(--surface-3);
+}
+
+/* ---- 登录码列：横向滚动时固定在最左 ---- */
+
+.detail-table .dt-code {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  min-width: 118px;
+  text-align: left;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 12.5px;
+  background: var(--surface-3);
+  border-right: 1px solid var(--border-strong);
+  /* 横向滚到一半时，右侧会露出半个数字（例如只看见 "4.00" 的尾巴 "0"）。
+     加一道投影，让那道边界读起来是「下面还有内容」而不是渲染错位。 */
+  box-shadow: 6px 0 8px -6px rgba(15, 23, 42, 0.22);
+}
+
+.detail-table thead .dt-code {
+  z-index: 4;
+  background: var(--surface-3);
+}
+
+.dt-meta {
+  font-family: var(--font);
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* ---- 单元格 ---- */
+
+.detail-table .dt-cell {
+  min-width: 46px;
+  font-size: 14px;
+}
+
+.detail-table .dt-miss {
+  color: var(--text-faint);
+}
+
+.detail-table .dt-sub {
+  font-weight: 700;
+  color: var(--accent);
+  min-width: 62px;
+}
+
+/* ---- 去分后均分那一行 ---- */
+
+.detail-table .dt-avg-row td {
+  border-top: 2px solid var(--border-strong);
+  background: var(--warn-soft);
+  font-weight: 700;
+  color: var(--text);
+}
+
+.detail-table .dt-avg-row .dt-code {
+  background: var(--warn-soft);
+  color: var(--text-dim);
+  font-family: var(--font);
+}

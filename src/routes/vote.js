@@ -3,12 +3,12 @@
 /**
  * 评委端路由（PLAN §7 / §9）—— 无需登录，靠持有短码。
  *
- * ⚠️ 匿名性：本文件的提交事务里，写入 ballot / score 的只有分数本身。
- *    禁止把 code、IP、User-Agent、请求时间写进这两张表（PLAN §5.2.4）。
- *    code 只写进 round_submission，那是另一张表，与选票无关联键。
+ * ⚠️ 2026-09-18 起选票**不再匿名**：`ballot` 带 `code` 列，管理员能还原
+ *    「谁给谁打了多少分」。这是业务方明确要求的（结果页要列出每位评委的打分），
+ *    是刻意决定，见 src/db.js 文件头。
  *
- * ⚠️ 本模型固有的边界（PLAN §5.3）：某一场若只有 1 个评委提交，那张票必然是他的。
- *    无法回避，只能靠「薄数据」标注把事实摆到明面上。
+ *    但**请求元数据**仍然禁止落库：写进 ballot 的只有 ballot_id 与 code，
+ *    IP / User-Agent / 提交时刻一律不写（数据最小化，启动断言会拦）。
  */
 
 const express = require('express');
@@ -21,7 +21,9 @@ const router = express.Router();
 const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
 
 const selectInvite = db.prepare('SELECT code, revoked FROM invite WHERE code = ?');
-const insertBallot = db.prepare('INSERT INTO ballot (ballot_id) VALUES (?)');
+// ⚠️ 2026-09-18 起选票带 code —— 结果页要能列出每位评委的打分（见 src/db.js 文件头）。
+//    除此之外**不要**再往里写任何东西：IP / User-Agent / 时间都不许落库。
+const insertBallot = db.prepare('INSERT INTO ballot (ballot_id, code) VALUES (?, ?)');
 const insertScore = db.prepare(
   'INSERT INTO score (ballot_id, round_id, dimension_id, value) VALUES (?, ?, ?, ?)'
 );
@@ -253,7 +255,7 @@ router.post('/api/v/:code/submit', (req, res) => {
     }
 
     const ballotId = crypto.randomUUID();
-    insertBallot.run(ballotId); // ⚠️ 只写 ballot_id，不写任何请求元数据
+    insertBallot.run(ballotId, code); // ⚠️ 只写 ballot_id 与 code，不写任何请求元数据
     for (const p of pairs) insertScore.run(ballotId, roundId, p.dimensionId, p.value);
 
     // 主键 (round_id, code) 冲突是并发双击的最后一道防线

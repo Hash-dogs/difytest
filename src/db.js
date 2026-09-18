@@ -3,25 +3,24 @@
 /**
  * 数据库入口：建库、建表、启动期结构断言、setting 读写 helper。
  *
- * ⚠️ PLAN §5.2 匿名性约束（改动前必读）：
- *   核心不变：**短码表只回答「哪个码交了第几场」，选票表只回答「有人打了这些分」，
- *   两表之间没有任何键可 join。**
+ * ⚠️ 2026-09-18 变更：**选票不再匿名。改动前必读。**
  *
- *   1. ballot 表禁止出现 code 列，禁止任何指向 invite 的外键
- *   2. ballot 表禁止存任何时间戳
- *   3. ballot / score / round_submission 必须 WITHOUT ROWID —— 否则隐式 rowid 按插入顺序增长，
- *      第 3 张票就是第 3 个提交的人，配合 round_submission.submitted_at 即可还原身份
- *   4. 提交接口禁止把 code / IP / User-Agent / 请求时间写入 ballot 或 score
- *   5. round_submission 的列集合严格等于 {round_id, code, submitted_at}
- *   6. round_submission 禁止出现 ballot_id 或任何指向 ballot 的外键
- *   7. score 的列集合严格等于 {ballot_id, round_id, dimension_id, value}。
- *      允许 round_id 是因为它标识的是**场次**而不是评委 —— 由
- *      round_submission(round_id, code) 与 score(ballot_id, round_id) 只能得到
- *      「这场有哪些码交了」和「这场有哪些票」，是集合对集合，不是一一映射
- *   8. round 与 invite 禁止出现 ballot_id
+ *   业务方要求结果页能列出「每个登录码 × 每位演讲者 × 每个维度」的评分，
+ *   因此 `ballot` 表现在带 `code` 列，选票与登录码之间**可以 join**，
+ *   管理员能够还原「谁给谁打了多少分」。
  *
- *   ⚠️ 本模型固有的边界（无法回避，见 PLAN §5.3）：某一场若只有 1 个评委提交，
- *      那张票必然是他的。这不是实现缺陷，只能靠「薄数据」标注把事实摆到明面上。
+ *   这是**刻意的产品决定**，不是疏漏。在此之前的版本（见 git 提交 e51d91a）
+ *   用 8 条断言保证「两表无任何关联键」，那套设计与理由留在 git 历史里备查。
+ *
+ *   相应地，启动期断言从「保证匿名」改为「保证结构不被改坏 + 数据最小化」：
+ *     1. ballot 列集合严格等于 {ballot_id, code}
+ *     2. score 列集合严格等于 {ballot_id, round_id, dimension_id, value}
+ *     3. round_submission 列集合严格等于 {round_id, code, submitted_at}
+ *     4. ballot / score / round_submission 必须 WITHOUT ROWID
+ *     5. ballot 禁止出现任何时间戳列 —— code 是业务要的，但**请求元数据**
+ *        （IP / User-Agent / 提交时刻）没有理由落库
+ *     6. 提交接口只允许把 code 写进 ballot，禁止写 IP / UA / 时间
+ *     7. 库里禁止出现 view / trigger —— 它们能绕过上面的列集合检查
  */
 
 const fs = require('node:fs');
@@ -31,8 +30,9 @@ const Database = require('better-sqlite3');
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const DB_PATH = path.join(DATA_DIR, 'pfxt.db');
 
-/** 当前 schema 版本。写在 PRAGMA user_version 里，用来识别老库。 */
-const SCHEMA_VERSION = 2;
+/** 当前 schema 版本。写在 PRAGMA user_version 里，用来识别老库。
+ *  3 = 选票带登录码（2026-09-18 起不再匿名）；2 = 上一版匿名结构。 */
+const SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 -- 演讲者（后台可配）
@@ -80,10 +80,16 @@ CREATE TABLE IF NOT EXISTS round_submission (
   PRIMARY KEY (round_id, code)
 ) WITHOUT ROWID;
 
--- 选票表：与 invite 无任何关联。⚠️ 只允许有 ballot_id 这一列。
+-- 选票表。
+-- ⚠️ code 列是**刻意**的：业务要求结果页列出每位评委的打分，选票与登录码因此可 join。
+--    但除了 code 之外禁止再加任何请求元数据（IP / User-Agent / 时间戳）——
+--    那些对业务没有价值，只会平白扩大暴露面。
 CREATE TABLE IF NOT EXISTS ballot (
-  ballot_id TEXT PRIMARY KEY
+  ballot_id TEXT PRIMARY KEY,
+  code      TEXT NOT NULL
 ) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS ballot_code ON ballot(code);
 
 -- 评分行：用 round_id 归属场次。
 -- ⚠️ 不用 contestant_id —— 重开场景下同一演讲者会有多场，就分不开了。
@@ -138,12 +144,13 @@ function initSchema() {
 
   if (userVersion !== SCHEMA_VERSION) {
     throw new Error(
-      '这不是场次模型的数据库（库版本 ' + userVersion + '，需要 ' + SCHEMA_VERSION + '），已拒绝启动。\n' +
-        '  「一次性打完所有人」那版的选票无法映射到场次，所以不做自动迁移。\n' +
+      '数据库版本不符（库版本 ' + userVersion + '，需要 ' + SCHEMA_VERSION + '），已拒绝启动。\n' +
+        '  版本 2 及更早的库里，选票不记录登录码，**无法补上** —— 已经投出去的票\n' +
+        '  永久不可归属到具体评委，这是选票不再匿名之前的历史数据。\n' +
         '  处理方式：备份 data/pfxt.db 后删掉它再启动 ——\n' +
         '    · 演讲者名单与维度会用同一份默认值重新写入\n' +
         '    · 管理员口令会重新生成并打印在启动横幅里\n' +
-        '    · 已签发的短码会丢失，需要重新生成发放\n' +
+        '    · 已签发的登录码会丢失，需要重新生成发放\n' +
         '  如果你确实要保留旧库，请另存一份，不要原地改名。'
     );
   }
@@ -154,29 +161,32 @@ function initSchema() {
 
 const initResult = initSchema();
 
-/* ---------------------------- 匿名性结构断言 ---------------------------- */
+/* ---------------------------- 启动期结构断言 ---------------------------- */
 
 /** 每张表的列集合必须**严格等于**这里声明的集合（不是「不多于」，是「就是这些」）。 */
 const EXPECTED_COLUMNS = {
-  ballot: ['ballot_id'],
+  // code 是业务要求的（结果页要列出每位评委的打分）；除它之外不许再加任何列
+  ballot: ['ballot_id', 'code'],
   score: ['ballot_id', 'round_id', 'dimension_id', 'value'],
   round_submission: ['round_id', 'code', 'submitted_at'],
 };
 
-/** 这些表必须 WITHOUT ROWID，否则隐式 rowid 会泄露插入顺序。 */
 const MUST_WITHOUT_ROWID = ['ballot', 'score', 'round_submission'];
 
-/** 除了 ballot 自己和 score，任何表都不许出现 ballot_id —— 那会变成指向选票的外键。 */
-const BALLOT_ID_ALLOWED_IN = new Set(['ballot', 'score']);
+/** 选票里出现这些列，说明有人把请求元数据写进去了 —— 业务不需要，纯属扩大暴露面。 */
+const FORBIDDEN_IN_BALLOT = /(^|_)(ip|ua|agent|time|timestamp|created|updated|at)($|_)/i;
 
 const columnsOf = (table) => db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
 const sameSet = (a, b) => a.length === b.length && [...a].sort().join('\u0000') === [...b].sort().join('\u0000');
 
 /**
- * 启动期断言：即使 db 文件是别人手工建的 / 被改过，也要保证匿名前提成立。
- * 这是 PLAN §9.1 与 §11「匿名性」验收项的最后一道防线。
+ * 启动期断言：即使 db 文件是别人手工建的 / 被改过，也要保证表结构没被改坏。
+ *
+ * ⚠️ 它**不再**保证匿名 —— 从 2026-09-18 起选票带登录码，本来就不匿名了。
+ *    现在守的是两件事：结构一致（列集合精确相等），以及数据最小化
+ *    （选票里除 code 外不许出现请求元数据）。
  */
-function assertAnonymousSchema() {
+function assertSchemaIntegrity() {
   const problems = [];
 
   // 1) 关键表的列集合必须精确匹配（只查「有没有多余列」会漏掉「少了列」的情况）
@@ -188,8 +198,7 @@ function assertAnonymousSchema() {
     }
     if (!sameSet(actual, expected)) {
       problems.push(
-        `${table} 表列集合异常：[${actual.join(', ')}]，` +
-          `只允许是 [${expected.join(', ')}]（不得有 code / 时间戳 / ballot_id）`
+        `${table} 表列集合异常：[${actual.join(', ')}]，只允许是 [${expected.join(', ')}]`
       );
     }
   }
@@ -200,45 +209,35 @@ function assertAnonymousSchema() {
       .prepare('SELECT sql FROM sqlite_master WHERE type = ? AND name = ?')
       .get('table', table);
     if (!row || !/WITHOUT\s+ROWID/i.test(row.sql)) {
-      problems.push(`${table} 表缺少 WITHOUT ROWID —— 隐式 rowid 会泄露选票插入顺序`);
+      problems.push(`${table} 表缺少 WITHOUT ROWID`);
     }
   }
 
-  // 3) ballot_id 只能出现在 ballot 和 score 里（挡掉「round / invite 上加一列指向选票」）
-  for (const row of db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all()) {
-    if (BALLOT_ID_ALLOWED_IN.has(row.name)) continue;
-    if (columnsOf(row.name).includes('ballot_id')) {
-      problems.push(`${row.name} 表出现了 ballot_id —— 选票不能与任何其他表建立关联键`);
+  // 3) 数据最小化：选票里只该有 ballot_id 与 code，不该有 IP / UA / 时间戳
+  for (const col of columnsOf('ballot')) {
+    if (col === 'ballot_id' || col === 'code') continue;
+    if (FORBIDDEN_IN_BALLOT.test(col)) {
+      problems.push(`ballot 表出现了请求元数据列「${col}」—— 业务不需要，禁止落库`);
     }
   }
 
-  // 4) 任何指向 ballot 的外键都不允许
-  for (const row of db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all()) {
-    const fks = db.prepare(`PRAGMA foreign_key_list(${row.name})`).all();
-    for (const fk of fks) {
-      if (fk.table === 'ballot') {
-        problems.push(`${row.name} 表存在指向 ballot 的外键 —— 那是一条可 join 的关联通道`);
-      }
-    }
-  }
-
-  // 5) view / trigger 可以绕过上面所有检查（视图能悄悄 join 两张表），一律禁止
+  // 4) view / trigger 能绕过上面的列集合检查，一律禁止
   const extra = db
     .prepare(`SELECT type, name FROM sqlite_master WHERE type IN ('view', 'trigger')`)
     .all();
   for (const row of extra) {
-    problems.push(`库里存在 ${row.type}「${row.name}」—— 视图/触发器可能绕过匿名性检查，必须删除`);
+    problems.push(`库里存在 ${row.type}「${row.name}」—— 视图/触发器会绕过结构检查，必须删除`);
   }
 
   if (problems.length) {
     throw new Error(
-      '数据库结构违反了匿名性约束，已拒绝启动：\n  - ' + problems.join('\n  - ') +
+      '数据库结构与预期不符，已拒绝启动：\n  - ' + problems.join('\n  - ') +
       '\n如需继续，请删除 data/pfxt.db 重建（会丢失已有数据）。'
     );
   }
 }
 
-assertAnonymousSchema();
+assertSchemaIntegrity();
 
 /* ------------------------------- 读写 helper ------------------------------- */
 
@@ -275,5 +274,5 @@ module.exports = {
   getSetting,
   setSetting,
   readConfig,
-  assertAnonymousSchema,
+  assertSchemaIntegrity,
 };

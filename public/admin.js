@@ -23,6 +23,7 @@
     started: false,
     results: null,
     rounds: null,
+    detail: null,
     timer: null,
   };
 
@@ -208,6 +209,7 @@
     if (tab === 'invites') loadInvites();
     if (tab === 'rounds') loadRounds();
     if (tab === 'results') loadResults();
+    if (tab === 'detail') loadDetail();
   }
 
   $('tabs').addEventListener('click', (event) => {
@@ -880,16 +882,14 @@
     const scored = rows.filter((r) => !r.blank);
     const totalBallots = rows.reduce((s, r) => s + r.n, 0);
 
-    // 横幅（PLAN §7.4 强制项）
+    // 横幅：只陈述当前状态，不再展开说明为什么不能提前公布
     const banner = $('result-banner');
     if (data.phase === 'open') {
       banner.className = 'result-banner is-live';
-      banner.textContent =
-        `⚠️ 比赛进行中（已收 ${totalBallots} 份评分）— 请勿对外透露任何分数。` +
-        '评审群里一句「目前第一是……」就会污染后面的场次，让排名向先上场的人收敛。';
+      banner.textContent = `比赛进行中（已收 ${totalBallots} 份评分）`;
     } else {
       banner.className = 'result-banner is-closed';
-      banner.textContent = `✅ 投票已结束（共 ${totalBallots} 份评分）— 结果可以公布了。`;
+      banner.textContent = `投票已结束（共 ${totalBallots} 份评分）`;
     }
 
     // 一致性告警
@@ -905,15 +905,13 @@
       return;
     }
 
-    // 计分口径说明。票数不齐是常态，必须把「薄数据」这件事摆在最显眼处（PLAN §5.3）
+    // 概要行：只呈现当前结果本身，不讲解计分规则（规则见 Excel 的「计分说明」页）
     const thinList = rows.filter((r) => r.thin);
     const sup = data.superseded || [];
     $('result-meta').innerHTML =
-      `共 <b>${rows.length}</b> 场 · 有效评分 <b>${totalBallots}</b> 份 · ` +
-      '每个维度按<b>实际收到的票数</b>处理：≥3 票去一高一低，2 票直接平均，1 票照用并标注 · 总分区间 1.00–5.00' +
+      `共 <b>${rows.length}</b> 场 · 有效评分 <b>${totalBallots}</b> 份` +
       (thinList.length
-        ? `<br /><span class="flag-warn">⚠️ 第 ${thinList.map((r) => r.seq).join('、')} 场票数不超过 2 张，结论不可靠</span>` +
-          ' —— 票数越少，「去一高一低」的保护越弱；某场只有 1 票时，那一场等于由一位评委决定。'
+        ? ` · <span class="flag-warn">⚠️ 第 ${thinList.map((r) => r.seq).join('、')} 场票数不超过 2 张，结论不可靠</span>`
         : '') +
       (sup.length
         ? `<br /><span class="hint">已作废（被重开顶掉）：第 ${sup.map((s) => s.seq).join('、')} 场，不计入排名。</span>`
@@ -972,6 +970,117 @@
     // 走浏览器下载；Excel 由服务端生成，用带 Cookie 的同源请求即可
     window.location.href = '/api/admin/results.xlsx';
     toast('已开始下载 Excel');
+  });
+
+  /* ------------------------------ 评分明细 ------------------------------ */
+
+  /**
+   * 每位评委（登录码）× 每场 × 每个维度的打分矩阵。
+   *
+   * ⚠️ 这张表之所以存在，是因为 2026-09-18 起选票带 code 列 —— 见 src/db.js 文件头。
+   *    在此之前选票与登录码无任何关联键，这张表在结构上就画不出来。
+   *
+   * 刻意**不参与 20 秒自动刷新**：表格很宽，重建 DOM 会把横向滚动位置冲掉。
+   * 主持人手动点「刷新」即可。
+   */
+  async function loadDetail() {
+    try {
+      const data = await api('/api/admin/results');
+      state.detail = data;
+      renderDetail(data);
+    } catch (err) {
+      if (!(err instanceof ApiError && err.status === 401)) {
+        $('detail-table').querySelector('tbody').innerHTML =
+          `<tr class="empty-row"><td>${esc(err.message || '加载失败')}</td></tr>`;
+      }
+    }
+  }
+
+  function renderDetail(data) {
+    const dims = data.dimensions;
+    const rounds = (data.rows || []).slice().sort((a, b) => a.seq - b.seq);
+    const judges = data.judgeDetail || [];
+
+    const thead = $('detail-table').querySelector('thead');
+    const tbody = $('detail-table').querySelector('tbody');
+
+    // 比赛期间提醒别把屏幕转向评委 —— 能看到明细之后，评分独立性的前提就变了
+    $('detail-warning').hidden = data.phase !== 'open';
+
+    if (!rounds.length) {
+      thead.innerHTML = '';
+      tbody.innerHTML = '<tr class="empty-row"><td>还没有开始任何一场。</td></tr>';
+      return;
+    }
+
+    // 交替底色按「场次」分组，让相邻演讲者的列块一眼能分开
+    const g = (i) => 'g' + (i % 2);
+
+    // 表头两行：第一行按演讲者跨列合并，第二行是维度名
+    let headTop = '<tr><th class="dt-code" rowspan="2">登录码</th>';
+    let headBottom = '<tr>';
+    rounds.forEach((r, i) => {
+      headTop += `<th class="dt-group ${g(i)}" colspan="${dims.length + 1}">第 ${r.seq} 场 · ${esc(r.name)}</th>`;
+      dims.forEach((d) => {
+        headBottom += `<th class="dt-dim ${g(i)}">${esc(d.name)}</th>`;
+      });
+      headBottom += `<th class="dt-sub ${g(i)}">本场小计</th>`;
+    });
+    thead.innerHTML = headTop + '</tr>' + headBottom + '</tr>';
+
+    const rowsHtml = judges
+      .map((j) => {
+        const perRound = new Map(j.rounds.map((x) => [x.roundId, x]));
+        const meta = j.revoked
+          ? '<span class="flag-warn">已作废</span>'
+          : `已交 ${j.roundsSubmitted} 场`;
+
+        let tds = `<td class="dt-code">${esc(j.code)}<br /><span class="dt-meta">${meta}</span></td>`;
+
+        rounds.forEach((r, i) => {
+          const cls = g(i);
+          const cell = perRound.get(r.roundId);
+          dims.forEach((d) => {
+            const v = cell ? cell.scores[d.id] : undefined;
+            tds +=
+              v === undefined
+                ? `<td class="dt-cell dt-miss ${cls}">—</td>`
+                : `<td class="dt-cell ${cls}">${v}</td>`;
+          });
+          tds +=
+            cell && cell.total !== null && cell.total !== undefined
+              ? `<td class="dt-sub ${cls}">${fmt2(cell.total)}</td>`
+              : `<td class="dt-sub dt-miss ${cls}">—</td>`;
+        });
+
+        return `<tr>${tds}</tr>`;
+      })
+      .join('');
+
+    // 末行：去分后的均分，作为逐格对照的基准
+    let avg = '<td class="dt-code dt-avg">去分后均分</td>';
+    rounds.forEach((r, i) => {
+      const cls = g(i);
+      dims.forEach((d) => {
+        const v = r.margins[d.id];
+        avg += `<td class="dt-avg ${cls}">${v === null || v === undefined ? '—' : fmt2(v)}</td>`;
+      });
+      avg += `<td class="dt-avg dt-sub ${cls}">${r.blank ? '—' : fmt2(r.total)}</td>`;
+    });
+
+    tbody.innerHTML =
+      (rowsHtml || '<tr class="empty-row"><td>还没有签发任何登录码。</td></tr>') +
+      `<tr class="dt-avg-row">${avg}</tr>`;
+  }
+
+  $('btn-refresh-detail').addEventListener('click', loadDetail);
+
+  $('btn-export-detail').addEventListener('click', () => {
+    if (!state.detail || state.detail.insufficient) {
+      return toast('还没有有效选票，无法导出', true);
+    }
+    window.location.href = '/api/admin/results.xlsx';
+    toast('已开始下载 Excel（含「评委明细」页）');
   });
 
   /* -------------------------------- 启动 -------------------------------- */
