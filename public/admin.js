@@ -1004,9 +1004,6 @@
     const thead = $('detail-table').querySelector('thead');
     const tbody = $('detail-table').querySelector('tbody');
 
-    // 比赛期间提醒别把屏幕转向评委 —— 能看到明细之后，评分独立性的前提就变了
-    $('detail-warning').hidden = data.phase !== 'open';
-
     if (!rounds.length) {
       thead.innerHTML = '';
       tbody.innerHTML = '<tr class="empty-row"><td>还没有开始任何一场。</td></tr>';
