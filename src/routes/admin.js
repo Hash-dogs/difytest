@@ -632,8 +632,13 @@ router.get('/api/admin/results', requireAdmin, (req, res) => {
     activityName: config.activityName,
     judgeCount,
     lcm: result.lcm,
+    lcmRaw: result.lcmRaw,
     orphans: result.orphans,
+    incomplete: result.incomplete,
     insufficient: result.insufficient,
+    // 同分顺位链（①②③ 实际命中哪几个维度）—— 页面要能说明「凭什么他排前面」，
+    // 导出也要能如实记录当时算的是什么
+    tieBreak: result.tieBreak,
     dimensions: config.dimensions,
     // 「已收 X / N」的 X 取自 round_submission，与选票张数分开报，便于交叉核对
     rows: result.rounds.map((row) => ({
@@ -661,66 +666,58 @@ router.get('/api/admin/results', requireAdmin, (req, res) => {
 
 const num = (v, digits = 4) => (v === null || v === undefined ? '—' : Number(v.toFixed(digits)));
 
-/** 把计分结果摊平成两个工作表 + 一张说明页 */
+/**
+ * 一句话说明这一行的名次是怎么定下来的。
+ *
+ * ⚠️ 采用《评选方案》口径后，**最终得分取整到 2 位小数**，同分的场次必然变多。
+ *    两行都显示 4.63 却一前一后，不给说法就会看着像排错了 —— 现场要能当场解释。
+ */
+function tieNote(row, chain) {
+  if (row.blank) return '';
+  if (row.needsVote) {
+    return row.awardPending
+      ? '四顺位全同，需评委组投票定名次与奖级'
+      : '四顺位全同，需评委组投票定名次';
+  }
+  if (!row.tieBreakLevel) return '';
+  const hit = (chain || []).find((c) => c.level === row.tieBreakLevel);
+  const what = hit ? `${hit.name}（${hit.weight}%）原始均分` : '全部评委不去分的加权总分';
+  return `总分相同，按第 ${row.tieBreakLevel} 顺位「${what}」区分`;
+}
+
+/** 把计分结果摊平成 汇总 / 评委明细 / 维度明细 / 去分明细 / 计分说明 */
 function buildResultSheets(data) {
   const dims = data.dimensions;
   const rows = data.rows;
+  const chain = data.tieBreak || [];
+  const live = data.phase === 'open';
 
   // ---- Sheet 1：汇总（与页面上的排名表一致）----
   const summary = [
-    ['名次', '演讲者', '项目', ...dims.map((d) => `${d.name}（${d.weight}%）`), '加权总分', '本场票数'],
+    ['名次', live ? '奖级（暂定）' : '奖级', '演讲者', '项目', '加权总分', '本场票数', '同分判定'],
     ...rows.map((r) => [
       r.blank ? '—' : r.rank,
+      r.blank ? '—' : r.awardPending || r.award,
       r.name,
       r.project,
-      ...dims.map((d) => num(r.margins[d.id])),
-      num(r.total),
+      num(r.total, 2),
       r.n,
+      tieNote(r, chain),
     ]),
   ];
 
-  // ---- Sheet 2：维度明细（每位演讲者 × 每个维度）----
+  // ---- Sheet 2：维度明细（每位演讲者 × 每个维度，**原始口径**）----
+  // 换成原始口径之后这里不再有「去分方式/去掉的最高分」之类的列 ——
+  // 去分发生在**评委总分**层面，不再是逐格的事，那些列已经没有对应的东西了。
+  // 评委级去分的留痕在「去分明细」工作表里。
   const detail = [
-    [
-      '演讲者',
-      '项目',
-      '维度',
-      '权重',
-      '1分票数',
-      '2分票数',
-      '3分票数',
-      '4分票数',
-      '5分票数',
-      '去分方式',
-      '去掉的最高分',
-      '去掉的最低分',
-      '去分后票数',
-      '去分后总分',
-      '该维度均分',
-      '备注',
-    ],
+    ['演讲者', '项目', '维度', '权重', '1分票数', '2分票数', '3分票数', '4分票数', '5分票数', '原始平均分', '加权贡献'],
   ];
   for (const r of rows) {
+    if (r.blank) continue; // 没有有效票就没有原始平均分可言，整行跳过
     for (const d of dims) {
-      const info = r.details[d.id];
+      const info = r.dimStats[d.id];
       if (!info) continue;
-
-      // ⚠️ 判据必须是「有没有去分」（trimmed），不能是「去分后还剩几票」（keptCount）——
-      //    3 票去一高一低后也只剩 1 票，用 keptCount 判断会把它误写成「仅 1 票，不去分」。
-      const mode =
-        info.keptCount === 0
-          ? '无票'
-          : !info.trimmed
-            ? info.single
-              ? '仅 1 票，不去分'
-              : '票数不足 3，不去分'
-            : '去一高一低';
-
-      const note = [];
-      if (info.single) note.push('⚠️ 该维度只有 1 票，等于由一位评委决定');
-      else if (info.trimmedToOne) note.push('收到 3 票，去分后只剩 1 票，等于由中间那位评委决定');
-      if (!info.trimmed && info.keptCount === 2) note.push('只有 2 票，未去分');
-
       detail.push([
         r.name,
         r.project,
@@ -731,38 +728,107 @@ function buildResultSheets(data) {
         info.counts[3],
         info.counts[4],
         info.counts[5],
-        mode,
-        info.removedHigh,
-        info.removedLow,
-        info.keptCount,
-        info.sum,
-        num(info.margin),
-        note.join('；'),
+        num(info.rawAvg),
+        // 加权贡献合计 = 全部评委不去分的加权总分（1.00–5.00），
+        // 即第四顺位比的那个数，摆出来方便手工核对
+        num((d.weight * info.rawAvg) / 100),
       ]);
     }
   }
 
-  // ---- Sheet 3：计分说明（含匿名边界的书面记录）----
+  // ---- Sheet 3：去分明细（新规则的审计留痕）----
+  // 现场对分数有异议时要能逐场说清：收了几张票、去掉了谁的、剩下几张、算出多少。
+  // 总分一律换算到 1.00–5.00 与页面同口径（评委总分 = Σ(维度得分 × 权重) ÷ 100）。
+  const trimRows = [
+    ['演讲者', '项目', '本场票数', '去分方式', '全部评委加权总分', '去掉的最高总分', '去掉的最低总分', '去分后票数', '去分后总分', '最终得分'],
+  ];
+  for (const r of rows) {
+    const n = r.n;
+    const mode = r.blank
+      ? '无票，不计分'
+      : !r.trim.trimmed
+        ? n === 1
+          ? '仅 1 票，不去分'
+          : '票数不足 3，不去分'
+        : '去掉一个最高总分和一个最低总分';
+
+    const rawAll = r.blank
+      ? null
+      : dims.reduce((acc, d) => acc + d.weight * (r.dimStats[d.id]?.rawSum || 0), 0) / (100 * n);
+    const scaled = (v) => (v === null || v === undefined ? '—' : num(v / 100));
+
+    trimRows.push([
+      r.name,
+      r.project,
+      n,
+      mode,
+      rawAll === null ? '—' : num(rawAll),
+      scaled(r.trim.removedHigh),
+      scaled(r.trim.removedLow),
+      r.trim.keptCount,
+      scaled(r.blank ? null : r.trim.sumKept),
+      num(r.total, 2),
+    ]);
+  }
+
+  // ---- Sheet 4：计分说明（含规则原文与匿名边界的书面记录）----
   const thinRounds = rows.filter((r) => r.thin);
   const thinText = thinRounds.length
     ? `第 ${thinRounds.map((r) => r.seq).join('、')} 场收到的有效票数不超过 2 张，结论不可靠，请谨慎解读。`
     : '无';
 
+  const chainText = chain.length
+    ? chain.map((c) => `第${c.level}顺位 → 「${c.name}」（${c.weight}%）原始平均分`).join('；')
+    : '（当前维度配置里没有 30% / 25% / 15% 的维度，①②③ 顺位均跳过）';
+
   const info = [
     ['项目', '内容'],
     ['活动名称', data.activityName || ''],
     ['导出时间', new Date().toLocaleString('zh-CN', { hour12: false })],
+    ['活动阶段', live ? '比赛进行中 —— 本表的名次与奖级均为**暂定**' : '投票已结束'],
     ['评委人数（设定值）', data.judgeCount],
     ['场次数', rows.length],
-    ['缩放基准 L（各格保留票数的最小公倍数）', data.lcm],
-    ['计分口径', '每一位演讲者单独计分：每个维度按**实际收到的票数**处理'],
-    ['　· 3 票及以上', '升序排序，去掉一个最高分和一个最低分，其余取平均'],
-    ['　· 正好 2 票', '两个分数直接取平均（去分会把分数去光，故不去分）'],
-    ['　· 只有 1 票', '直接采用该分数，并在明细页标注「仅 1 票」'],
+    ['缩放基准 L（各场保留票数的最小公倍数）', data.lcm],
+    ['缩放基准 Lraw（各场有效票数的最小公倍数，同分顺位用）', data.lcmRaw],
+    ['', ''],
+    ['【取分规则】', '《Dify工作流竞赛作品评选方案》'],
+    ['计分口径', '每一位演讲者单独计分：先算**每位评委的加权总分**，再去分'],
+    ['　· 评委总分', 'Σ(该评委各维度得分 × 维度权重) ÷ 100，取值 1.00–5.00'],
+    ['　· 3 票及以上', '按总分升序，去掉一个最高总分和一个最低总分，其余取平均'],
+    ['　· 正好 2 票', '两个总分直接取平均（去分会把票去光，故不去分）'],
+    ['　· 只有 1 票', '直接采用该总分，并在页面标注「仅 1 票」'],
     ['　· 一张票都没有', '该场不计分，名次栏显示「—」，不影响其它场次'],
-    ['维度权重', dims.map((d) => `${d.name} ${d.weight}%`).join(' / ')],
-    ['加权总分算法', 'Σ(维度均分 × 权重) ÷ 100，取值范围 1.00–5.00'],
-    ['排名规则', '按统一缩放后的**整数**加权分降序比较，并列名次相同、下一名跳号'],
+    ['最终得分', '剩余总分求平均后**四舍五入保留 2 位小数**'],
+    [
+      '⚠️ 去分的单位是评委总分，不是单个维度',
+      '即去掉的是「总分最高/最低的那位评委的整张票」，不是每个维度各自去一个最高最低。' +
+        '两者结果不同：前者才是方案原文的口径。',
+    ],
+    [
+      '⚠️ 总分相同的评委',
+      '若多位评委总分并列在最高或最低，去分时任取其中一位；' +
+        '因为被去掉的总分相同，最终得分不受影响。',
+    ],
+    ['', ''],
+    ['【同分细则】', '最终得分相同（取整后）时，依次比较，高者优先'],
+    ['实际生效的顺位链', chainText],
+    ['第四顺位', '全部评委（不去最高、最低）的加权总分'],
+    ['第五顺位', '仍完全相同，由评委组针对同分项目进行一次无记名投票 —— 系统不代劳，只标注「待投票」'],
+    [
+      '⚠️ 顺位不用 20% 的维度',
+      '方案原文的第三顺位是 15% 的「完整性与可用性」，**刻意跳过** 20% 的「效率提升价值」。' +
+        '这不是笔误，实现按原文照办。',
+    ],
+    ['', ''],
+    ['【排名与奖级】', ''],
+    ['排名', '按最终得分降序；四条顺位全同则并列，下一名跳号'],
+    ['奖级名额', '一等奖 2 名、二等奖 3 名，其余为三等奖（按名次表里的位置分配）'],
+    [
+      '⚠️ 并列跨奖级时',
+      '若一个「四顺位全同」的并列组横跨奖级边界，该组标注「X / Y 待投票」，' +
+        '不替评委组指定奖级 —— 否则等于替他们做了决定，还会让固定名额落空。',
+    ],
+    ['⚠️ 名额可能不满', '参赛作品不足 6 件时，二等奖或三等奖会空出；名额是上限不是保底。'],
     ['薄数据场次', thinText],
     ['', ''],
     [
@@ -784,15 +850,16 @@ function buildResultSheets(data) {
     [
       '⚠️ 票数少时的读法',
       '某一场若只有 1–2 位评委提交，该场成绩的参考价值很低（去分保护失效）；' +
+        '恰好 3 位评委时，去分后只剩中间那一位的总分，等于由他一个人决定该场。' +
         '0 票的场次名次为空、不计入排名。这类场次在汇总页已标注。',
     ],
   ];
 
-  // ---- Sheet 2：评委明细（每位登录码 × 每场 × 每个维度）----
   return [
     { name: '汇总', rows: summary },
     { name: '评委明细', rows: buildJudgeDetailRows(data.judgeDetail, rows, dims) },
     { name: '维度明细', rows: detail },
+    { name: '去分明细', rows: trimRows },
     { name: '计分说明', rows: info },
   ];
 }
@@ -832,8 +899,10 @@ function buildJudgeDetailRows(judgeDetail, roundRows, dimList) {
     out.push(line);
   }
 
-  // 末行给出均分，方便逐格对比某位评委是偏高还是偏低
-  const avg = ['（去分后均分）', '', ''];
+  // 末行给出均分，方便逐格对比某位评委是偏高还是偏低。
+  // ⚠️ 是**原始**均分（不去分）—— 去分发生在评委总分层面，把被去掉的评委
+  //    排除在这条基准之外，就没法用来判断「这位评委整体偏高还是偏低」了。
+  const avg = ['（原始均分）', '', ''];
   for (const r of cols) {
     for (const d of dimList) {
       const v = r.margins[d.id];
@@ -863,10 +932,13 @@ router.get('/api/admin/results.xlsx', requireAdmin, (req, res) => {
 
   const sheets = buildResultSheets({
     activityName: config.activityName,
+    phase: config.phase,
     dimensions: config.dimensions,
     judgeCount: judgeCountOf(),
     judgeDetail,
     lcm: result.lcm,
+    lcmRaw: result.lcmRaw,
+    tieBreak: result.tieBreak,
     rows: result.rounds.map((row) => ({
       ...row,
       submitted: submittedByRound.get(row.roundId) ?? 0,
@@ -937,7 +1009,9 @@ function buildDetailWorkbook(judgeDetail, roundRows, dimList) {
       rows.push(line);
     }
 
-    // 末行均分，作为逐格对照的基准
+    // 末行均分，作为逐格对照的基准。
+    // 这张表列的是**原始**打分，所以基准也是原始均分（不去分）；
+    // 每个小计列就是该评委这一场的加权总分，谁被去掉了照样看得出来（值等于极值的那位）。
     const avg = ['（均分）'];
     for (const d of dimList) {
       const v = r.margins[d.id];

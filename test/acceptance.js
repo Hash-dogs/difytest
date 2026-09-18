@@ -355,6 +355,9 @@ async function checkMainFlow() {
   // ---- ★ 回归：3 票去一高一低后只剩 1 票，但**不能**被标成「仅 1 票」 ----
   //   曾经的 bug：single = keptCount === 1，于是 3 位评委的场次每个格子都说「仅 1 票」，
   //   而票数明明有 3 张。判据必须是「实际收到的票数」。
+  //
+  //   ⚠️ 2026-09-18 改口径后，去分发生在**评委加权总分**层面而不是单个维度格，
+  //      所以这些标记从「每个维度一份」变成了「每场一份」。
   const adv3 = await api('POST', '/api/admin/rounds/advance', {});
   const r3 = adv3.data.round.roundId;
   for (const c of codes) await api('POST', `/api/v/${c}/submit`, { roundId: r3, scores });
@@ -362,19 +365,9 @@ async function checkMainFlow() {
   const res3 = await api('GET', '/api/admin/results');
   const row3 = res3.data.rows.find((r) => r.roundId === r3);
   check('★ 3 位评委都交了的场次 n=3', row3 && row3.n === 3, row3 && String(row3.n));
-  check(
-    '★ 3 票**不能**被标成「仅 1 票」',
-    dimensions.every((d) => row3.details[d.id].single === false),
-    JSON.stringify(dimensions.map((d) => row3.details[d.id].single))
-  );
-  check(
-    '★ 3 票去分后剩 1 票要单独标记 trimmedToOne',
-    dimensions.every((d) => row3.details[d.id].trimmedToOne === true)
-  );
-  check(
-    '★ 3 票的 keptCount 确实是 1（去分后只剩中间那位）',
-    dimensions.every((d) => row3.details[d.id].keptCount === 1)
-  );
+  check('★ 3 票**不能**被标成「仅 1 票」', row3.trim.single === false, String(row3.trim.single));
+  check('★ 3 票去分后剩 1 票要单独标记 trimmedToOne', row3.trim.trimmedToOne === true);
+  check('★ 3 票的 keptCount 确实是 1（去分后只剩中间那位）', row3.trim.keptCount === 1);
 
   return { r1, r2, r3 };
 }
@@ -391,20 +384,33 @@ async function checkResults(r1, r2) {
   const row2 = res.data.rows.find((r) => r.roundId === r2);
 
   check('第一场 n=2（有人弃权也不报错）', row1 && row1.n === 2, row1 && String(row1.n));
-  check('第一场每个维度 keptCount=2（不去分）', dimensions.every((d) => row1.details[d.id].keptCount === 2));
-  check('第一场没有 single 单元格', dimensions.every((d) => row1.details[d.id].single === false));
+  check('第一场 keptCount=2（票数不足 3，不去分）', row1.trim.keptCount === 2);
+  check('第一场没有被标 single', row1.trim.single === false);
   check('第一场标记 thin', row1.thin === true);
   check('第一场不是 blank', row1.blank === false);
 
   check('第二场 n=1', row2 && row2.n === 1, row2 && String(row2.n));
-  check('第二场每个维度 keptCount=1', dimensions.every((d) => row2.details[d.id].keptCount === 1));
-  check('★ 单票单元格被标记 single（要如实告知）', dimensions.every((d) => row2.details[d.id].single === true));
+  check('第二场 keptCount=1', row2.trim.keptCount === 1);
+  check('★ 单票场次被标记 single（要如实告知）', row2.trim.single === true);
   check('第二场标记 thin', row2.thin === true);
 
   check('缩放基准 L 是整数', Number.isSafeInteger(res.data.lcm), String(res.data.lcm));
+  check('缩放基准 Lraw 是整数', Number.isSafeInteger(res.data.lcmRaw), String(res.data.lcmRaw));
   check('所有 u 都是安全整数', res.data.rows.filter((r) => !r.blank).every((r) => Number.isSafeInteger(r.u)));
+  check(
+    '★ 最终得分是四舍五入到 2 位小数的整数刻度（score100）',
+    res.data.rows
+      .filter((r) => !r.blank)
+      .every((r) => Number.isInteger(r.score100) && Math.abs(r.total * 100 - r.score100) < 1e-9)
+  );
+  check(
+    '★ 每个非空场次都有名次和奖级',
+    res.data.rows.filter((r) => !r.blank).every((r) => Number.isInteger(r.rank) && r.award),
+    JSON.stringify(res.data.rows.map((r) => [r.name, r.rank, r.award]))
+  );
   check('完整性交叉核对通过', res.data.integrity.ok === true, JSON.stringify(res.data.integrity));
   check('没有孤儿行', res.data.orphans === 0, String(res.data.orphans));
+  check('没有残缺票', res.data.incomplete === 0, String(res.data.incomplete));
 
   // 每场每码一张票：各场的「实到票数」总和必须等于「已收份数」总和。
   // ⚠️ 别写死数字 —— 上面每加一场，这里的期望值就变了，写死只会得到一条假失败。
@@ -478,6 +484,25 @@ async function checkJudgeDetail() {
   check('明细报表导出 → 200 且是 ZIP', detailBook.status === 200 && detailBook.isZip, String(detailBook.status));
 
   check('结果报表含汇总与计分说明', resultBook.sheets.includes('汇总') && resultBook.sheets.includes('计分说明'), resultBook.sheets.join(','));
+  check(
+    '★ 结果报表含「去分明细」（评委总分口径的审计留痕）',
+    resultBook.sheets.includes('去分明细'),
+    resultBook.sheets.join(',')
+  );
+
+  // 汇总表要突出名次与奖级，维度分挪到「维度明细」去 —— 这条钉住结果页那次改版
+  const resultCells = [...resultBook.xml.matchAll(/<t[^>]*>([^<]*)<\/t>/g)].map((m) => m[1]);
+  check('★ 汇总表有「奖级」列', resultCells.includes('奖级') || resultCells.includes('奖级（暂定）'));
+  check(
+    '★ 计分说明写的是「按每位评委的加权总分去分」，不再是逐格去分',
+    resultCells.some((c) => c.includes('每位评委的加权总分')),
+    resultCells.filter((c) => c.includes('加权总分')).slice(0, 2).join(' | ')
+  );
+  check(
+    '★ 计分说明记录了同分顺位与奖级名额',
+    resultCells.some((c) => c.includes('第五顺位')) && resultCells.some((c) => c.includes('一等奖 2 名')),
+    resultCells.filter((c) => c.includes('顺位')).slice(0, 2).join(' | ')
+  );
   check(
     '★ 明细报表不含汇总 / 维度明细 / 计分说明',
     !detailBook.sheets.some((n) => /汇总|维度明细|计分说明/.test(n)),

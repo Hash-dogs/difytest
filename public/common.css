@@ -23,6 +23,18 @@
   --danger: #c0362c;
   --danger-soft: #fdecea;
 
+  /* 奖级：金 / 银 / 铜。现场公布时要一眼分得出一二三等奖，所以各给一整套
+     （底色 + 文字 + 描边），亮色与暗色主题各定义一次，不能只写在 media 里 */
+  --gold: #8a6100;
+  --gold-soft: #fbf0d2;
+  --gold-line: #e2c675;
+  --silver: #5c6875;
+  --silver-soft: #eef1f5;
+  --silver-line: #c6ced8;
+  --bronze: #8a4f26;
+  --bronze-soft: #f9ebe1;
+  --bronze-line: #dcb192;
+
   --radius: 12px;
   --radius-sm: 8px;
   --shadow: 0 1px 2px rgba(16, 32, 58, 0.06), 0 4px 14px rgba(16, 32, 58, 0.06);
@@ -55,6 +67,16 @@
     --warn-soft: #2e2512;
     --danger: #f0736a;
     --danger-soft: #331a19;
+
+    --gold: #e8c267;
+    --gold-soft: #2f2716;
+    --gold-line: #6b5527;
+    --silver: #b9c4d1;
+    --silver-soft: #242a33;
+    --silver-line: #49535f;
+    --bronze: #d99a6c;
+    --bronze-soft: #2e2018;
+    --bronze-line: #6a4630;
 
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 14px rgba(0, 0, 0, 0.3);
     --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.55);
