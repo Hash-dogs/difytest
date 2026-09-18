@@ -352,7 +352,31 @@ async function checkMainFlow() {
   check('评委人数是 3', overview.data.judgeCount === 3);
   check('未超员时没有告警', overview.data.anomalies.length === 0, JSON.stringify(overview.data.anomalies));
 
-  return { r1, r2 };
+  // ---- ★ 回归：3 票去一高一低后只剩 1 票，但**不能**被标成「仅 1 票」 ----
+  //   曾经的 bug：single = keptCount === 1，于是 3 位评委的场次每个格子都说「仅 1 票」，
+  //   而票数明明有 3 张。判据必须是「实际收到的票数」。
+  const adv3 = await api('POST', '/api/admin/rounds/advance', {});
+  const r3 = adv3.data.round.roundId;
+  for (const c of codes) await api('POST', `/api/v/${c}/submit`, { roundId: r3, scores });
+
+  const res3 = await api('GET', '/api/admin/results');
+  const row3 = res3.data.rows.find((r) => r.roundId === r3);
+  check('★ 3 位评委都交了的场次 n=3', row3 && row3.n === 3, row3 && String(row3.n));
+  check(
+    '★ 3 票**不能**被标成「仅 1 票」',
+    dimensions.every((d) => row3.details[d.id].single === false),
+    JSON.stringify(dimensions.map((d) => row3.details[d.id].single))
+  );
+  check(
+    '★ 3 票去分后剩 1 票要单独标记 trimmedToOne',
+    dimensions.every((d) => row3.details[d.id].trimmedToOne === true)
+  );
+  check(
+    '★ 3 票的 keptCount 确实是 1（去分后只剩中间那位）',
+    dimensions.every((d) => row3.details[d.id].keptCount === 1)
+  );
+
+  return { r1, r2, r3 };
 }
 
 /* ============================ 六、计分与结果 ============================ */
@@ -382,9 +406,11 @@ async function checkResults(r1, r2) {
   check('完整性交叉核对通过', res.data.integrity.ok === true, JSON.stringify(res.data.integrity));
   check('没有孤儿行', res.data.orphans === 0, String(res.data.orphans));
 
-  // 每场每码一张票 → 上面两张场次共 3 张票
+  // 每场每码一张票：各场的「实到票数」总和必须等于「已收份数」总和。
+  // ⚠️ 别写死数字 —— 上面每加一场，这里的期望值就变了，写死只会得到一条假失败。
   const nBallot = res.data.rows.reduce((s, r) => s + r.n, 0);
-  check('共 3 张选票', nBallot === 3, String(nBallot));
+  const nSubmitted = res.data.rows.reduce((s, r) => s + r.submitted, 0);
+  check('总票数 == 各场已收份数之和', nBallot === nSubmitted, `${nBallot} vs ${nSubmitted}`);
 
   // Excel 导出
   const xlsx = await fetch(BASE + '/api/admin/results.xlsx', { headers: { Cookie: cookie } });

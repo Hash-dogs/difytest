@@ -47,7 +47,8 @@ test('自适应去分：n=1/2/3/5/6 各自的 keptCount 与 margin', () => {
   assert.equal(r1.n, 1);
   assert.equal(r1.details[1].keptCount, 1);
   assert.equal(r1.details[1].trimmed, false);
-  assert.equal(r1.details[1].single, true); // 只有 1 票 → 页面必须标「仅 1 票」
+  assert.equal(r1.details[1].single, true); // 真的只有 1 票 → 页面标「仅 1 票」
+  assert.equal(r1.details[1].trimmedToOne, false);
   assert.equal(r1.margins[1], 4); // 旧实现这里会算出 0.00，现在直接用
   assert.equal(r1.total, 4);
 
@@ -79,6 +80,29 @@ test('自适应去分：n=1/2/3/5/6 各自的 keptCount 与 margin', () => {
   assert.equal(r6.margins[1], 3.5); // [2,3,4,5] = 14 / 4
   assert.equal(r6.u, 1400);
   assert.equal(r6.total, 3.5);
+});
+
+test('★ 回归：single 必须按「实际收到的票数」判断，不能按「去分后剩几票」', () => {
+  // 曾经的 bug：`single: keptCount === 1`。
+  // 3 位评委去一高一低之后正好剩 1 票，于是每个单元格都被标成「仅 1 票」——
+  // 票数明明有 3 张，界面在说谎。判据必须是 raw.length，不是 keptCount。
+  const cases = [
+    { n: 1, votes: [4], single: true, trimmedToOne: false, keptCount: 1 },
+    { n: 2, votes: [4, 5], single: false, trimmedToOne: false, keptCount: 2 },
+    { n: 3, votes: [4, 5, 5], single: false, trimmedToOne: true, keptCount: 1 },
+    { n: 4, votes: [4, 4, 5, 5], single: false, trimmedToOne: false, keptCount: 2 },
+    { n: 5, votes: [3, 4, 4, 5, 5], single: false, trimmedToOne: false, keptCount: 3 },
+    { n: 6, votes: [3, 4, 4, 5, 5, 5], single: false, trimmedToOne: false, keptCount: 4 },
+  ];
+
+  for (const c of cases) {
+    const r = computeResults(scene([{ scores: [c.votes] }], [100]));
+    const d = r.rounds[0].details[1];
+    assert.equal(r.rounds[0].n, c.n, `${c.n} 票的 n`);
+    assert.equal(d.keptCount, c.keptCount, `${c.n} 票的 keptCount`);
+    assert.equal(d.single, c.single, `${c.n} 票的 single（只有 1 票才是 true）`);
+    assert.equal(d.trimmedToOne, c.trimmedToOne, `${c.n} 票的 trimmedToOne`);
+  }
 });
 
 test('★ 跨场次混合去分：11 票与 2 票同场竞技，L = LCM(9,2) = 18', () => {

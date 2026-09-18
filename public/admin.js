@@ -940,9 +940,16 @@
         const marginCells = dims
           .map((d) => {
             const info = r.details[d.id] || {};
-            const mark = info.single
-              ? ' <span class="flag-warn" title="这一维度只收到 1 票，等于由一位评委决定">仅1票</span>'
-              : '';
+            // 两种「这个数字只靠一张票」的情况，成因不同，标签必须分开：
+            //   single        —— 真的只收到 1 票
+            //   trimmedToOne  —— 收到 3 票，去一高一低后只剩 1 票
+            let mark = '';
+            if (info.single) {
+              mark = ' <span class="flag-warn" title="这一维度只收到 1 票，等于由一位评委决定">仅1票</span>';
+            } else if (info.trimmedToOne) {
+              mark =
+                ' <span class="flag-warn" title="收到 3 票，去掉一个最高和一个最低后只剩 1 票，等于由中间那位评委决定">去分后剩1票</span>';
+            }
             const v = r.margins[d.id];
             return `<td class="num-cell">${v === null || v === undefined ? '—' : fmt2(v)}${mark}</td>`;
           })

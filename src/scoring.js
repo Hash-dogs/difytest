@@ -193,7 +193,14 @@ function computeResults({ rounds, dimensions, ballots }) {
         keptCount,
         sum,
         margin,
-        single: keptCount === 1,
+        // ⚠️ 2026-09-18 修复：这里原本写的是 `keptCount === 1`，把「去分后还剩 1 票」
+        //    错当成了「只收到 1 票」。3 位评委去一高一低之后正好剩 1 票，
+        //    于是每个单元格都被界面标成「仅 1 票」—— 票数明明有 3 张。
+        //    必须按**实际收到的票数**判断，否则标签就是在说谎。
+        single: raw.length === 1,
+        // 收到 3 票时，去分后只剩 1 票 —— 数值上等于中间那位评委说了算。
+        // 这是另一回事，单独标记，不要和「只有 1 票」混为一谈。
+        trimmedToOne: raw.length > 1 && keptCount === 1,
       };
     }
 

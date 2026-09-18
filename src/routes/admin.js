@@ -705,18 +705,21 @@ function buildResultSheets(data) {
       const info = r.details[d.id];
       if (!info) continue;
 
+      // ⚠️ 判据必须是「有没有去分」（trimmed），不能是「去分后还剩几票」（keptCount）——
+      //    3 票去一高一低后也只剩 1 票，用 keptCount 判断会把它误写成「仅 1 票，不去分」。
       const mode =
         info.keptCount === 0
           ? '无票'
-          : info.keptCount === 1
-            ? '仅 1 票，不去分'
-            : info.trimmed
-              ? '去一高一低'
-              : '票数不足 3，不去分';
+          : !info.trimmed
+            ? info.single
+              ? '仅 1 票，不去分'
+              : '票数不足 3，不去分'
+            : '去一高一低';
 
       const note = [];
       if (info.single) note.push('⚠️ 该维度只有 1 票，等于由一位评委决定');
-      if (info.keptCount === 2) note.push('只有 2 票，未去分');
+      else if (info.trimmedToOne) note.push('收到 3 票，去分后只剩 1 票，等于由中间那位评委决定');
+      if (!info.trimmed && info.keptCount === 2) note.push('只有 2 票，未去分');
 
       detail.push([
         r.name,
