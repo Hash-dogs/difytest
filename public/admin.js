@@ -1075,12 +1075,13 @@
 
   $('btn-refresh-detail').addEventListener('click', loadDetail);
 
+  // 明细页导出的是**明细报表**（只有逐条打分），与结果页的**结果报表**是两份东西
   $('btn-export-detail').addEventListener('click', () => {
-    if (!state.detail || state.detail.insufficient) {
-      return toast('还没有有效选票，无法导出', true);
+    if (!state.detail || !state.detail.rows || !state.detail.rows.length) {
+      return toast('还没有开始任何一场，没有明细可导出', true);
     }
-    window.location.href = '/api/admin/results.xlsx';
-    toast('已开始下载 Excel（含「评委明细」页）');
+    window.location.href = '/api/admin/detail.xlsx';
+    toast('已开始下载评分明细');
   });
 
   /* -------------------------------- 启动 -------------------------------- */

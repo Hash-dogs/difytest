@@ -785,48 +785,62 @@ function buildResultSheets(data) {
     ],
   ];
 
-  // ---- Sheet 4：评委明细（每位登录码 × 每场 × 每个维度）----
-  // 列按场次 seq 排，不用汇总页的排名顺序 —— 这张表是按比赛流程读的
-  const cols = rows.slice().sort((a, b) => a.seq - b.seq);
-
-  const judgeHeader = ['登录码', '状态'];
-  for (const r of cols) {
-    for (const d of dims) judgeHeader.push(`${r.seq}. ${r.name} · ${d.name}`);
-    judgeHeader.push(`${r.seq}. ${r.name} · 小计`);
-  }
-
-  const judgeRows = [judgeHeader];
-  for (const j of data.judgeDetail || []) {
-    const perRound = new Map(j.rounds.map((x) => [x.roundId, x]));
-    const line = [j.code, j.revoked ? '已作废' : '可用'];
-    for (const r of cols) {
-      const cell = perRound.get(r.roundId);
-      for (const d of dims) {
-        const v = cell ? cell.scores[d.id] : undefined;
-        line.push(v === undefined ? '—' : v); // 「—」= 这位评委这一场弃权
-      }
-      line.push(cell && cell.total !== null ? Number(cell.total.toFixed(4)) : '—');
-    }
-    judgeRows.push(line);
-  }
-
-  // 末行给出「去分后均分」，方便逐格对比某位评委是偏高还是偏低
-  const avgLine = ['（去分后均分）', ''];
-  for (const r of cols) {
-    for (const d of dims) {
-      const v = r.margins[d.id];
-      avgLine.push(v === null || v === undefined ? '—' : Number(v.toFixed(4)));
-    }
-    avgLine.push(r.blank ? '—' : Number(r.total.toFixed(4)));
-  }
-  judgeRows.push(avgLine);
-
+  // ---- Sheet 2：评委明细（每位登录码 × 每场 × 每个维度）----
   return [
     { name: '汇总', rows: summary },
-    { name: '评委明细', rows: judgeRows },
+    { name: '评委明细', rows: buildJudgeDetailRows(data.judgeDetail, rows, dims) },
     { name: '维度明细', rows: detail },
     { name: '计分说明', rows: info },
   ];
+}
+
+/**
+ * 「评委 × 场次 × 维度」明细矩阵。
+ *
+ * 结果报表（/results.xlsx）与明细报表（/detail.xlsx）共用这一份，避免两处逻辑漂移。
+ *
+ * @param {Array} judgeDetail 来自 computeCurrentResults
+ * @param {Array} roundRows   computeResults 的 rows —— 用来定列顺序、取均分
+ * @param {Array} dimList     维度
+ */
+function buildJudgeDetailRows(judgeDetail, roundRows, dimList) {
+  // 列按场次 seq 排，不用汇总页的排名顺序 —— 这张表是按比赛流程读的
+  const cols = roundRows.slice().sort((a, b) => a.seq - b.seq);
+
+  const header = ['登录码', '已交场次', '备注'];
+  for (const r of cols) {
+    for (const d of dimList) header.push(`${r.seq}. ${r.name} · ${d.name}`);
+    header.push(`${r.seq}. ${r.name} · 小计`);
+  }
+
+  const out = [header];
+
+  for (const j of judgeDetail || []) {
+    const perRound = new Map(j.rounds.map((x) => [x.roundId, x]));
+    const line = [j.code, j.roundsSubmitted || 0, j.revoked ? '已作废' : ''];
+    for (const r of cols) {
+      const cell = perRound.get(r.roundId);
+      for (const d of dimList) {
+        const v = cell ? cell.scores[d.id] : undefined;
+        line.push(v === undefined ? '—' : v); // 「—」= 这位评委这一场没有提交
+      }
+      line.push(cell && cell.total !== null ? Number(cell.total.toFixed(4)) : '—');
+    }
+    out.push(line);
+  }
+
+  // 末行给出均分，方便逐格对比某位评委是偏高还是偏低
+  const avg = ['（去分后均分）', '', ''];
+  for (const r of cols) {
+    for (const d of dimList) {
+      const v = r.margins[d.id];
+      avg.push(v === null || v === undefined ? '—' : Number(v.toFixed(4)));
+    }
+    avg.push(r.blank ? '—' : Number(r.total.toFixed(4)));
+  }
+  out.push(avg);
+
+  return out;
 }
 
 router.get('/api/admin/results.xlsx', requireAdmin, (req, res) => {
@@ -866,6 +880,48 @@ router.get('/api/admin/results.xlsx', requireAdmin, (req, res) => {
   res.setHeader(
     'Content-Disposition',
     `attachment; filename="result.xlsx"; filename*=UTF-8''${encodeURIComponent(filename)}`
+  );
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(buildXlsx(sheets));
+});
+
+/* ---------------------------- 导出明细 ----------------------------- */
+
+/**
+ * 明细报表：**只有逐条打分**，不含汇总、不含维度的统计分布、不含计分说明。
+ *
+ * 与 /results.xlsx（结果报表）是两份不同的东西 —— 明细页该导出明细，
+ * 把结果报表塞给它是答非所问。
+ */
+router.get('/api/admin/detail.xlsx', requireAdmin, (req, res) => {
+  let computed;
+  try {
+    computed = computeCurrentResults();
+  } catch (err) {
+    return bad(res, err.message, 500, 'scoring_failed');
+  }
+
+  const { config, result, judgeDetail } = computed;
+
+  // 一场都没开时没有列可画；但**开了场却没人交**仍要能导出（那正是「谁弃权了」的证据）
+  if (!result.rounds.length) {
+    return bad(res, '还没有开始任何一场，没有明细可导出。', 409, 'no_data');
+  }
+
+  const sheets = [
+    { name: '评分明细', rows: buildJudgeDetailRows(judgeDetail, result.rounds, config.dimensions) },
+  ];
+
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const filename = `评分明细-${stamp}.xlsx`;
+
+  res.setHeader(
+    'Content-Type',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  );
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="detail.xlsx"; filename*=UTF-8''${encodeURIComponent(filename)}`
   );
   res.setHeader('Cache-Control', 'no-store');
   res.send(buildXlsx(sheets));

@@ -431,6 +431,50 @@ async function checkJudgeDetail() {
   // 一次都没交的码也要出现在明细里，否则「谁完全没参与」就看不出来
   const idle = detail.filter((d) => d.rounds.length === 0);
   check('未提交过的码也列在明细中', detail.length === submitted.length + idle.length);
+
+  // ---- 两份导出必须是**两份不同的报表** ----
+  const grab = async (path) => {
+    const r = await fetch(BASE + path, { headers: { Cookie: cookie } });
+    const buf = Buffer.from(await r.arrayBuffer());
+    const xml = buf.toString('utf8');
+    return {
+      status: r.status,
+      isZip: buf.length > 4 && buf[0] === 0x50 && buf[1] === 0x4b,
+      sheets: [...xml.matchAll(/<sheet [^>]*name="([^"]+)"/g)].map((m) => m[1]),
+      xml,
+    };
+  };
+
+  const resultBook = await grab('/api/admin/results.xlsx');
+  const detailBook = await grab('/api/admin/detail.xlsx');
+
+  check('结果报表导出 → 200 且是 ZIP', resultBook.status === 200 && resultBook.isZip, String(resultBook.status));
+  check('明细报表导出 → 200 且是 ZIP', detailBook.status === 200 && detailBook.isZip, String(detailBook.status));
+
+  check('结果报表含汇总与计分说明', resultBook.sheets.includes('汇总') && resultBook.sheets.includes('计分说明'), resultBook.sheets.join(','));
+  check('★ 明细报表只有一张表', detailBook.sheets.length === 1, detailBook.sheets.join(','));
+  check('★ 明细报表的表叫「评分明细」', detailBook.sheets[0] === '评分明细', detailBook.sheets[0]);
+  check(
+    '★ 明细报表不含汇总 / 维度明细 / 计分说明',
+    !detailBook.sheets.some((n) => /汇总|维度明细|计分说明/.test(n)),
+    detailBook.sheets.join(',')
+  );
+
+  // 明细表头必须逐场逐维度铺开，而不是只给个总数
+  const headerCells = [...detailBook.xml.matchAll(/<t[^>]*>([^<]*)<\/t>/g)].map((m) => m[1]);
+  check('★ 明细报表的表头含「登录码」', headerCells.includes('登录码'));
+  check(
+    '★ 明细报表的表头逐维度展开',
+    dimensions.every((d) => headerCells.some((h) => h.includes(d.name))),
+    headerCells.filter((h) => /场/.test(h)).slice(0, 3).join(' / ')
+  );
+  check('明细报表末行是均分', headerCells.includes('（去分后均分）'));
+
+  // 一场都没开时明细报表该拒绝，而不是导出一张空表
+  const before = await api('GET', '/api/admin/rounds');
+  if (before.data.rounds.length === 0) {
+    check('没有场次时明细报表拒绝导出', true, '（本用例在清空后才有意义，跳过）');
+  }
 }
 
 /* ============================ 七、重开与重置 ============================ */
