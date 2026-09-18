@@ -1,606 +1,458 @@
 'use strict';
 
 /**
- * 评委端（PLAN §7.2）
+ * 评委端状态机（PLAN §7.2 / §7.3）。
  *
- * ⚠️ 两条不能碰的红线：
- *   1. 评分控件绝不预填默认值（PLAN §9.2）—— 一旦有默认值，「必须全部打分」的校验就是假的
- *   2. 草稿只存在本机 localStorage，服务端不存半成品（PLAN §3 决策 2）
+ * 七种屏幕，全部由 `/api/v/<code>/state` 的返回驱动：
+ *   loading   正在加载
+ *   blocked   登录码无效 / 已作废 / 投票已结束 / 连不上
+ *   waiting   已登录，当前没有正在进行的演讲者
+ *   score     ★ 唯一的打分屏，**只显示当前这一位演讲者**
+ *   submitted 本场已提交，等待下一位
+ *
+ * ⚠️ 「看不到其他演讲者」由三层保证（PLAN §7.2）：
+ *   1. 服务端 /state 的响应体里只有当前这一位 —— 前端想显示别人也没有数据
+ *   2. 前端没有上一位/下一位/跳转控件，也没有位置记忆
+ *   3. 任何人的分数本来就不下发到评委端
+ *
+ * ⚠️ 用轮询而不是 WebSocket / SSE（PLAN §7.3）：企业微信内置浏览器对 ws:// 支持不佳，
+ *   而当前部署是纯 HTTP，wss 无从谈起。轮询还能熬过「WebView 切后台」
+ *   「链接改在系统浏览器打开」这类上下文切换。
  */
-
 (function () {
-  const CODE = (() => {
-    const m = location.pathname.match(/^\/v\/([^/]+)\/?$/);
-    return m ? decodeURIComponent(m[1]) : '';
-  })();
+  var CODE_KEY = 'pfxt:code';
+  var DRAFT_PREFIX = 'pfxt:draft:';
+  var POLL_MS = 3000;
 
-  const DRAFT_KEY = `pfxt:draft:${CODE}`;
-  const SUBMITTED_KEY = `pfxt:submitted:${CODE}`;
-  const POS_KEY = `pfxt:pos:${CODE}`;
-  const DRAFT_DEBOUNCE_MS = 300;
-
-  const state = {
-    activityName: '',
-    dimensions: [],
-    contestants: [],
-    draft: {}, // { [contestantId]: { [dimensionId]: 1..5 } }
-    index: 0,
+  var el = {
+    loading: document.getElementById('screen-loading'),
+    blocked: document.getElementById('screen-blocked'),
+    blockedIcon: document.getElementById('blocked-icon'),
+    blockedTitle: document.getElementById('blocked-title'),
+    blockedDesc: document.getElementById('blocked-desc'),
+    blockedAction: document.getElementById('blocked-action'),
+    waiting: document.getElementById('screen-waiting'),
+    waitingTitle: document.getElementById('waiting-title'),
+    waitingDesc: document.getElementById('waiting-desc'),
+    score: document.getElementById('screen-score'),
+    roundBadge: document.getElementById('round-badge'),
+    roundName: document.getElementById('round-name'),
+    roundProject: document.getElementById('round-project'),
+    roundIntroWrap: document.getElementById('round-intro-wrap'),
+    roundIntro: document.getElementById('round-intro'),
+    dimHost: document.getElementById('dim-host'),
+    scoreHint: document.getElementById('score-hint'),
+    btnSubmit: document.getElementById('btn-submit'),
+    submitted: document.getElementById('screen-submitted'),
+    submittedDesc: document.getElementById('submitted-desc'),
+    modalRoot: document.getElementById('modal-root'),
   };
 
-  const $ = (id) => document.getElementById(id);
-  const esc = (s) =>
-    String(s ?? '').replace(
-      /[&<>"']/g,
-      (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]
-    );
+  var SCREENS = ['loading', 'blocked', 'waiting', 'score', 'submitted'];
 
-  /* ---------------------------- localStorage ---------------------------- */
+  var S = {
+    code: '',
+    screen: 'loading',
+    roundId: null,
+    dimensions: [],
+    draft: {}, // { [dimensionId]: 1..5 }
+    renderedRoundId: null, // 当前 DOM 是按哪一场渲染的
+    submitting: false,
+    fails: 0,
+  };
 
-  const lsGet = (k) => {
+  /* ------------------------------ 小工具 ------------------------------ */
+
+  function esc(v) {
+    return String(v === null || v === undefined ? '' : v).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function lsGet(k) {
     try {
       return localStorage.getItem(k);
-    } catch {
+    } catch (e) {
       return null;
     }
-  };
-  const lsSet = (k, v) => {
+  }
+
+  function lsSet(k, v) {
     try {
       localStorage.setItem(k, v);
-    } catch {
-      /* 隐私模式下可能失败，不影响本次打分 */
+    } catch (e) {
+      /* 隐私模式 / 企微偶发清空：写不进去也不能让打分中断 */
     }
-  };
-  const lsDel = (k) => {
+  }
+
+  function lsDel(k) {
     try {
       localStorage.removeItem(k);
-    } catch {
+    } catch (e) {
       /* 同上 */
     }
-  };
-
-  let saveTimer = null;
-  function saveDraftSoon() {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => lsSet(DRAFT_KEY, JSON.stringify(state.draft)), DRAFT_DEBOUNCE_MS);
-  }
-  function saveDraftNow() {
-    clearTimeout(saveTimer);
-    lsSet(DRAFT_KEY, JSON.stringify(state.draft));
   }
 
-  function readDraft() {
-    const raw = lsGet(DRAFT_KEY);
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === 'object' ? parsed : null;
-    } catch {
-      return null;
-    }
+  /**
+   * 短码解析顺序：**URL 优先 → localStorage 兜底**（PLAN §7.3）。
+   * 企微内置浏览器与系统浏览器是两个独立存储域，localStorage 也不一定留得住，
+   * 所以 URL 里的码才是权威来源。
+   */
+  function codeFromUrl() {
+    var m = location.pathname.match(/^\/v\/([^/]+)\/?$/);
+    return m ? decodeURIComponent(m[1]).toUpperCase() : '';
   }
 
-  function readSubmittedMarker() {
-    const raw = lsGet(SUBMITTED_KEY);
-    if (raw === null) return null;
-    try {
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === 'object' ? parsed : { submitted: true };
-    } catch {
-      return { submitted: true };
-    }
+  function codeFromStore() {
+    return (lsGet(CODE_KEY) || '').toUpperCase();
   }
 
-  /* -------------------------------- 屏幕 -------------------------------- */
-
-  const SCREENS = ['screen-loading', 'screen-blocked', 'screen-intro', 'screen-score', 'screen-done'];
-  function showScreen(id) {
-    for (const s of SCREENS) $(s).hidden = s !== id;
+  function currentCode() {
+    return codeFromUrl() || codeFromStore();
   }
 
-  function showBlocked(icon, title, desc) {
-    $('blocked-icon').textContent = icon;
-    $('blocked-title').textContent = title;
-    $('blocked-desc').textContent = desc;
-    showScreen('screen-blocked');
-  }
-
-  /* -------------------------------- 弹窗 -------------------------------- */
-
-  function closeModal() {
-    document.querySelectorAll('.modal-backdrop').forEach((n) => n.remove());
-    document.body.style.overflow = '';
-  }
-
-  function openModal({ title, bodyHtml, actions }) {
-    closeModal();
-    const backdrop = document.createElement('div');
-    backdrop.className = 'modal-backdrop';
-    backdrop.innerHTML =
-      '<div class="modal" role="dialog" aria-modal="true">' +
-      `<div class="modal-head"><h3 class="modal-title">${esc(title)}</h3></div>` +
-      `<div class="modal-body">${bodyHtml}</div>` +
-      '<div class="modal-foot"></div>' +
-      '</div>';
-
-    const foot = backdrop.querySelector('.modal-foot');
-    for (const action of actions) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'btn ' + (action.className || '');
-      btn.textContent = action.label;
-      btn.disabled = Boolean(action.disabled);
-      btn.addEventListener('click', () => action.onClick && action.onClick(backdrop));
-      foot.appendChild(btn);
-    }
-
-    document.getElementById('modal-root').appendChild(backdrop);
-    document.body.style.overflow = 'hidden';
-    return backdrop;
-  }
-
-  function showAlert(title, message, onClose) {
-    openModal({
-      title,
-      bodyHtml: `<p style="color:var(--text-dim)">${esc(message)}</p>`,
-      actions: [
-        {
-          label: '知道了',
-          className: 'btn-primary',
-          onClick: () => {
-            closeModal();
-            if (onClose) onClose();
-          },
-        },
-      ],
+  function show(name) {
+    SCREENS.forEach(function (k) {
+      el[k].hidden = k !== name;
     });
+    S.screen = name;
   }
 
-  /* ------------------------------ 打分状态 ------------------------------ */
-
-  const cellOf = (contestantId, dimensionId) => (state.draft[contestantId] || {})[dimensionId];
-
-  function isContestantComplete(contestantId) {
-    return state.dimensions.every((d) => Number.isInteger(cellOf(contestantId, d.id)));
+  function blocked(icon, title, desc, canReenter) {
+    el.blockedIcon.textContent = icon;
+    el.blockedTitle.textContent = title;
+    el.blockedDesc.textContent = desc;
+    el.blockedAction.hidden = !canReenter;
+    show('blocked');
   }
 
-  function findMissing() {
-    const missing = [];
-    state.contestants.forEach((c, index) => {
-      for (const d of state.dimensions) {
-        if (!Number.isInteger(cellOf(c.id, d.id))) {
-          missing.push({ index, contestantId: c.id, dimensionId: d.id, cName: c.name, dName: d.name });
-        }
-      }
-    });
-    return missing;
+  /* ------------------------------ 草稿 ------------------------------ */
+
+  // 草稿按「短码 + 场次」隔离：换一位演讲者就是一份全新的草稿，
+  // 上一场没交的草稿不会被下一场复用（那会张冠李戴）。
+  function draftKey(roundId) {
+    return DRAFT_PREFIX + S.code + ':' + roundId;
   }
 
-  function setScore(contestantId, dimensionId, value) {
-    const cells = state.draft[contestantId] || (state.draft[contestantId] = {});
-    if (cells[dimensionId] === value) return; // 不允许取消，也就没有「弃权」这个状态
-    cells[dimensionId] = value;
-    saveDraftSoon();
+  function loadDraft(roundId) {
+    try {
+      var raw = lsGet(draftKey(roundId));
+      var obj = raw ? JSON.parse(raw) : null;
+      return obj && typeof obj === 'object' ? obj : {};
+    } catch (e) {
+      return {};
+    }
   }
 
-  /* ------------------------------ 渲染：说明 ---------------------------- */
+  function saveDraft() {
+    if (S.roundId === null) return;
+    lsSet(draftKey(S.roundId), JSON.stringify(S.draft));
+  }
 
-  function renderIntro(hasDraft) {
-    $('intro-activity').textContent = state.activityName;
+  function clearDraft(roundId) {
+    lsDel(draftKey(roundId));
+  }
 
-    const total = state.contestants.length * state.dimensions.length;
-    $('intro-count').textContent =
-      `${state.contestants.length} 位参赛者 × ${state.dimensions.length} 个维度 = ${total}`;
+  /* ------------------------------ 渲染 ------------------------------ */
 
-    $('intro-dims').innerHTML = state.dimensions
-      .map(
-        (d) => `
-        <li>
-          <div class="dim-brief-head">
-            <span class="dim-brief-name">${esc(d.name)}</span>
-            <span class="dim-brief-weight">${esc(d.weight)}%</span>
-          </div>
-          ${d.detail ? `<p class="dim-brief-detail">${esc(d.detail)}</p>` : ''}
-        </li>`
-      )
-      .join('');
+  function renderWaiting(data) {
+    el.waitingTitle.textContent = '等待主持人开始下一位';
+    el.waitingDesc.textContent = data.contestantCount
+      ? '共 ' + data.contestantCount + ' 位演讲者。页面每 3 秒自动刷新，不用手动操作。'
+      : '页面每 3 秒自动刷新，不用手动操作。';
+    // 离开打分屏时把游标清掉，这样下一场会被当成「新的一场」重新渲染
+    S.roundId = null;
+    S.renderedRoundId = null;
+    show('waiting');
+  }
 
-    const hint = $('intro-resume-hint');
-    if (hasDraft) {
-      const doneCount = state.contestants.filter((c) => isContestantComplete(c.id)).length;
-      hint.textContent = `检测到未提交的草稿（已完成 ${doneCount} / ${state.contestants.length} 人），将从上次的进度继续。`;
-      hint.hidden = false;
-      $('btn-start').textContent = '继续打分';
-    } else {
-      hint.hidden = true;
-      $('btn-start').textContent = '开始打分';
+  function renderSubmitted(data) {
+    var cur = data.current;
+    el.submittedDesc.textContent =
+      '第 ' + cur.seq + ' 位「' + cur.contestant.name + '」的评分已匿名记录，不可修改。';
+    S.roundId = cur.roundId;
+    show('submitted');
+  }
+
+  function buildScoreDom(data, notice) {
+    var cur = data.current;
+
+    el.roundBadge.textContent =
+      '第 ' + cur.seq + ' 位' + (data.contestantCount ? ' · 共 ' + data.contestantCount + ' 位' : '');
+    el.roundName.textContent = cur.contestant.name;
+    el.roundProject.textContent = cur.contestant.project || '';
+
+    var intro = (cur.contestant.intro || '').trim();
+    el.roundIntroWrap.hidden = !intro;
+    el.roundIntro.textContent = intro;
+
+    // 「上一场没交就被切走了」的提示。只在换场时出现一次，不常驻。
+    var old = el.score.querySelector('.round-notice');
+    if (old) old.parentNode.removeChild(old);
+    if (notice) {
+      var n = document.createElement('div');
+      n.className = 'notice notice-warn round-notice';
+      var icon = document.createElement('span');
+      icon.className = 'notice-icon';
+      icon.textContent = '⚠️';
+      var text = document.createElement('span');
+      text.textContent = notice;
+      n.appendChild(icon);
+      n.appendChild(text);
+      el.score.insertBefore(n, el.score.querySelector('.card'));
     }
 
-    showScreen('screen-intro');
-  }
-
-  /* ------------------------------ 渲染：打分 ---------------------------- */
-
-  function renderCard() {
-    const c = state.contestants[state.index];
-    const isLast = state.index === state.contestants.length - 1;
-    const introText = (c.intro || '').trim();
-    const longIntro = introText.length > 90;
-
-    const rows = state.dimensions
-      .map((d) => {
-        const current = cellOf(c.id, d.id);
-        const buttons = [1, 2, 3, 4, 5]
-          .map(
-            (v) =>
-              `<button type="button" class="score-btn${current === v ? ' is-active' : ''}"
-                 data-value="${v}" aria-pressed="${current === v}"
-                 aria-label="${esc(d.name)} ${v} 分">${v}</button>`
-          )
+    el.dimHost.innerHTML = S.dimensions
+      .map(function (d) {
+        var buttons = [1, 2, 3, 4, 5]
+          .map(function (v) {
+            var on = S.draft[d.id] === v ? ' is-active' : '';
+            return (
+              '<button type="button" class="score-btn' + on + '"' +
+              ' data-dim="' + Number(d.id) + '" data-val="' + v + '"' +
+              ' aria-label="' + esc(d.name) + ' 打 ' + v + ' 分">' + v + '</button>'
+            );
+          })
           .join('');
 
-        return `
-          <div class="dim-row" data-dimension-id="${d.id}">
-            <div class="dim-row-head">
-              <span class="dim-row-name">${esc(d.name)}</span>
-              <span class="dim-row-weight">${esc(d.weight)}%</span>
-            </div>
-            ${d.detail ? `<p class="dim-row-detail">${esc(d.detail)}</p>` : ''}
-            <div class="scale" role="group" aria-label="${esc(d.name)}">${buttons}</div>
-            <div class="scale-hint"><span>1 分 · 低</span><span>5 分 · 高</span></div>
-          </div>`;
+        return (
+          '<div class="dim-row" data-dim="' + Number(d.id) + '">' +
+          '<div class="dim-row-head"><span class="dim-row-name">' + esc(d.name) + '</span></div>' +
+          (d.detail ? '<p class="dim-row-detail">' + esc(d.detail) + '</p>' : '') +
+          '<div class="scale">' + buttons + '</div>' +
+          '</div>'
+        );
+      })
+      .join('');
+  }
+
+  function renderScore(data) {
+    var cur = data.current;
+    S.dimensions = data.dimensions || [];
+
+    if (S.renderedRoundId !== cur.roundId) {
+      // 换场了。上一场若还有没提交的分数，明确告诉评委那一场记为弃权 —— 不能悄悄吞掉。
+      var hadUnsaved = S.renderedRoundId !== null && Object.keys(S.draft).length > 0;
+      S.roundId = cur.roundId;
+      S.draft = loadDraft(cur.roundId);
+      S.renderedRoundId = cur.roundId;
+      buildScoreDom(data, hadUnsaved ? '上一场已经结束了，你没来得及提交，那一场记为弃权。' : null);
+    } else {
+      S.roundId = cur.roundId;
+    }
+
+    show('score');
+    updateSubmitState();
+  }
+
+  function missingDims() {
+    return S.dimensions.filter(function (d) {
+      return !S.draft[d.id];
+    });
+  }
+
+  function updateSubmitState() {
+    var missing = missingDims().length;
+    el.btnSubmit.disabled = missing > 0 || S.submitting;
+    el.btnSubmit.textContent = S.submitting ? '提交中…' : '提交本场评分';
+    el.scoreHint.textContent = missing
+      ? '还有 ' + missing + ' 个维度没有打分'
+      : '全部打完了，可以提交';
+  }
+
+  /* ---------------------------- 状态分发 ---------------------------- */
+
+  function applyState(data) {
+    // 已结束但本场还没交 → 直接告知结束；交过的人仍然显示「已提交」更友好
+    if (data.phase !== 'open' && !(data.current && data.current.submitted)) {
+      S.roundId = null;
+      S.renderedRoundId = null;
+      S.draft = {};
+      blocked('🔒', '投票已结束', '主持人已经结束本次投票，感谢参与。', false);
+      return;
+    }
+    if (!data.current) return renderWaiting(data);
+    if (data.current.submitted) return renderSubmitted(data);
+    return renderScore(data);
+  }
+
+  function poll() {
+    S.code = currentCode();
+
+    if (!S.code) {
+      blocked('🔑', '需要登录码', '请从主持人发给你的入口进入，并输入登录码。', true);
+      return;
+    }
+
+    fetch('/api/v/' + encodeURIComponent(S.code) + '/state', {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    })
+      .then(function (r) {
+        return r.json().then(function (d) {
+          return { status: r.status, data: d || {} };
+        });
+      })
+      .then(function (res) {
+        S.fails = 0;
+
+        if (!res.data.ok) {
+          if (res.data.error === 'revoked') {
+            return blocked('🚫', '登录码已作废', '这个登录码已被主持人作废，请联系核对。', true);
+          }
+          return blocked('❓', '登录码无效', '请核对主持人发给你的那串字符。', true);
+        }
+
+        applyState(res.data);
+      })
+      .catch(function () {
+        S.fails += 1;
+
+        // 正在打分时**绝不替换界面**：草稿存在本机，网络恢复后会继续，
+        // 贸然切屏会把评委正在打的分从眼前拿走。
+        if (S.screen === 'score') {
+          el.scoreHint.textContent = '网络不稳，正在自动重试…（已打的分数保存在本机，不会丢）';
+          return;
+        }
+        if (S.fails >= 2 || S.screen === 'loading') {
+          blocked('📶', '连不上服务器', '请检查手机网络后重试。', false);
+        }
+      });
+  }
+
+  /* ------------------------------ 交互 ------------------------------ */
+
+  el.dimHost.addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('.score-btn') : null;
+    if (!btn || S.submitting || S.screen !== 'score') return;
+
+    var dimId = Number(btn.dataset.dim);
+    var val = Number(btn.dataset.val);
+    if (S.draft[dimId] === val) return; // 不允许取消 —— 没有「弃权」这个状态
+
+    S.draft[dimId] = val;
+
+    var row = btn.parentNode;
+    Array.prototype.forEach.call(row.children, function (b) {
+      b.classList.remove('is-active');
+    });
+    btn.classList.add('is-active');
+
+    saveDraft();
+    updateSubmitState();
+  });
+
+  function closeModal() {
+    el.modalRoot.innerHTML = '';
+  }
+
+  function confirmModal() {
+    var list = S.dimensions
+      .map(function (d) {
+        return (
+          '<div class="confirm-row"><span>' +
+          esc(d.name) +
+          '</span><strong>' +
+          S.draft[d.id] +
+          ' 分</strong></div>'
+        );
       })
       .join('');
 
-    $('card-host').innerHTML = `
-      <article class="card" data-contestant-id="${c.id}">
-        <header class="card-head">
-          <div class="card-index">第 ${state.index + 1} / ${state.contestants.length} 位</div>
-          <h2 class="card-name">${esc(c.name)}</h2>
-          <div class="card-project">${esc(c.project)}</div>
-          ${
-            introText
-              ? `<p class="card-intro${longIntro ? ' is-collapsed' : ''}" data-intro>${esc(introText)}</p>` +
-                (longIntro ? '<button type="button" class="intro-toggle" data-intro-toggle>展开全部 ⌄</button>' : '')
-              : ''
-          }
-        </header>
-        ${rows}
-      </article>`;
+    el.modalRoot.innerHTML =
+      '<div class="modal-backdrop">' +
+      '<div class="modal">' +
+      '<div class="modal-head"><h3 class="modal-title">确认提交本场评分</h3></div>' +
+      '<div class="modal-body">' +
+      '<p class="hint">请核对。提交后<strong>不可修改</strong>。</p>' +
+      '<div class="confirm-list">' + list + '</div>' +
+      '</div>' +
+      '<div class="modal-foot">' +
+      '<button type="button" class="btn" data-act="cancel">再看看</button>' +
+      '<button type="button" class="btn btn-primary" data-act="ok">确认提交</button>' +
+      '</div></div></div>';
 
-    const nextBtn = $('btn-next');
-    nextBtn.textContent = isLast ? '提交' : '下一位 ›';
-    nextBtn.classList.toggle('btn-primary', true);
-    $('btn-prev').disabled = state.index === 0;
-
-    updateProgress();
-  }
-
-  function updateProgress() {
-    const total = state.contestants.length;
-    const done = state.contestants.filter((c) => isContestantComplete(c.id)).length;
-
-    $('progress-text').textContent = `已完成 ${done} / ${total} 人`;
-
-    const fill = $('progress-fill');
-    const pct = total ? Math.round((done / total) * 100) : 0;
-    fill.style.width = pct + '%';
-    fill.classList.toggle('is-complete', total > 0 && done === total);
-
-    // 全部打完时，给一个直达末位的入口（提交按钮始终只在最后一位上）
-    const jump = $('btn-jump-submit');
-    const isLast = state.index === total - 1;
-    jump.hidden = !(total > 0 && done === total && !isLast);
-  }
-
-  function goTo(index) {
-    state.index = Math.max(0, Math.min(state.contestants.length - 1, index));
-    lsSet(POS_KEY, String(state.index));
-    renderCard();
-    window.scrollTo({ top: 0, behavior: 'auto' });
-  }
-
-  /* -------------------------------- 提交 -------------------------------- */
-
-  function showMissingModal(missing) {
-    const shown = missing.slice(0, 12);
-    const rest = missing.length - shown.length;
-
-    const body =
-      '<p style="color:var(--text-dim);margin-bottom:12px">' +
-      `还有 <strong style="color:var(--danger)">${missing.length}</strong> 项没有打分。` +
-      '点击任意一项可直接跳到该位置补分。</p>' +
-      '<ul class="missing-list">' +
-      shown
-        .map(
-          (m) => `
-          <li>
-            <button type="button" class="missing-item" data-goto-index="${m.index}" data-goto-dim="${m.dimensionId}">
-              <span><strong>${esc(m.cName)}</strong> · ${esc(m.dName)}</span>
-              <span class="missing-go">去补分 ›</span>
-            </button>
-          </li>`
-        )
-        .join('') +
-      '</ul>' +
-      (rest > 0 ? `<p class="hint" style="margin-top:10px">还有 ${rest} 项未列出。</p>` : '');
-
-    const backdrop = openModal({
-      title: '还不能提交',
-      bodyHtml: body,
-      actions: [{ label: '返回继续打分', className: 'btn-primary', onClick: closeModal }],
-    });
-
-    backdrop.querySelectorAll('[data-goto-index]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const index = Number(btn.dataset.gotoIndex);
-        const dimensionId = Number(btn.dataset.gotoDim);
+    el.modalRoot.addEventListener('click', function onModal(e) {
+      var act = e.target.closest ? e.target.closest('[data-act]') : null;
+      if (act) {
+        el.modalRoot.removeEventListener('click', onModal);
         closeModal();
-        goTo(index);
-        highlightDimension(dimensionId);
-      });
-    });
-  }
-
-  function highlightDimension(dimensionId) {
-    const row = document.querySelector(`.dim-row[data-dimension-id="${dimensionId}"]`);
-    if (!row) return;
-    row.classList.add('is-missing');
-    row.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    setTimeout(() => row.classList.remove('is-missing'), 2400);
-  }
-
-  function showConfirmModal() {
-    const total = state.contestants.length * state.dimensions.length;
-    openModal({
-      title: '确认提交',
-      bodyHtml:
-        '<div class="notice notice-danger" style="margin-bottom:12px">' +
-        '<span class="notice-icon">⚠️</span>' +
-        '<span><strong>提交后无法修改，也没有撤销入口。</strong>请确认所有评分都已核对无误。</span>' +
-        '</div>' +
-        `<p style="color:var(--text-dim)">共 ${state.contestants.length} 位参赛者、${total} 个评分点，` +
-        '全部已打分。</p>',
-      actions: [
-        { label: '再检查一下', onClick: closeModal },
-        { label: '确认提交', className: 'btn-primary', onClick: () => doSubmit() },
-      ],
-    });
-  }
-
-  function buildPayload() {
-    const scores = [];
-    for (const c of state.contestants) {
-      for (const d of state.dimensions) {
-        scores.push({ contestantId: c.id, dimensionId: d.id, value: cellOf(c.id, d.id) });
-      }
-    }
-    return scores;
-  }
-
-  async function doSubmit() {
-    const buttons = document.querySelectorAll('.modal-foot .btn');
-    buttons.forEach((b) => (b.disabled = true));
-
-    try {
-      const res = await fetch(`/api/v/${CODE}/submit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scores: buildPayload() }),
-      });
-      const data = await res.json().catch(() => null);
-
-      if (res.ok && data && data.ok) {
-        const snapshot = { submitted: true, at: Date.now(), scores: state.draft };
-        lsSet(SUBMITTED_KEY, JSON.stringify(snapshot));
-        clearTimeout(saveTimer);
-        lsDel(DRAFT_KEY);
-        lsDel(POS_KEY);
-        closeModal();
-        renderDone(snapshot);
+        if (act.dataset.act === 'ok') doSubmit();
         return;
       }
-
-      closeModal();
-      handleSubmitFailure(res.status, data);
-    } catch {
-      closeModal();
-      showAlert('提交失败', '网络异常，未能连上服务器。你的评分仍保存在本机，可稍后重试。');
-    }
-  }
-
-  function handleSubmitFailure(status, data) {
-    const error = (data && data.error) || '';
-    const message = (data && data.message) || '';
-
-    if (error === 'already_submitted') {
-      // PLAN §7.2 边界：本地记录被清了，但服务端已经收过这张票
-      lsSet(SUBMITTED_KEY, JSON.stringify({ submitted: true, at: Date.now() }));
-      clearTimeout(saveTimer);
-      lsDel(DRAFT_KEY);
-      showBlocked('✅', '本链接已提交过', '系统记录显示这个链接已经提交过选票，无需重复提交。若您确认没有提交过，请联系组织者。');
-      return;
-    }
-    if (error === 'revoked') {
-      showBlocked('🚫', '链接已作废', '该链接已被组织者作废，无法提交。请向组织者索取新的链接。');
-      return;
-    }
-    if (error === 'not_found') {
-      showBlocked('❓', '链接无效', '找不到这个链接，请向组织者确认地址是否完整。');
-      return;
-    }
-    if (error === 'closed') {
-      showAlert('投票已结束', '本次投票已经封盘，无法再提交。');
-      return;
-    }
-    showAlert('提交失败', message || '服务器拒绝了这次提交，请稍后重试或联系组织者。');
-  }
-
-  /* ------------------------------ 渲染：完成 ---------------------------- */
-
-  function renderDone(snapshot) {
-    const host = $('done-summary');
-    const scores = snapshot && snapshot.scores;
-
-    if (!scores || !state.contestants.length) {
-      host.innerHTML = '';
-      showScreen('screen-done');
-      return;
-    }
-
-    // 只读回显：给评委留一份自己打过的分（不改变「已提交」这个事实）
-    host.className = 'done-summary';
-    host.innerHTML =
-      '<h2 class="section-title" style="margin:26px 0 10px">您提交的评分</h2>' +
-      state.contestants
-        .map((c) => {
-          const cells = scores[c.id] || {};
-          const chips = state.dimensions
-            .map(
-              (d) =>
-                `<span class="summary-chip">${esc(d.name)} <b>${esc(cells[d.id] ?? '—')}</b></span>`
-            )
-            .join('');
-          return `
-            <div class="summary-card">
-              <div class="summary-name">${esc(c.name)} <span>· ${esc(c.project)}</span></div>
-              <div class="summary-scores">${chips}</div>
-            </div>`;
-        })
-        .join('');
-
-    showScreen('screen-done');
-  }
-
-  /* -------------------------------- 绑定 -------------------------------- */
-
-  function bindEvents() {
-    $('btn-start').addEventListener('click', () => {
-      const saved = Number(lsGet(POS_KEY));
-      state.index = Number.isInteger(saved) && saved >= 0 && saved < state.contestants.length ? saved : 0;
-      renderCard();
-      window.scrollTo({ top: 0, behavior: 'auto' });
-      showScreen('screen-score');
-    });
-
-    $('card-host').addEventListener('click', (event) => {
-      const toggle = event.target.closest('[data-intro-toggle]');
-      if (toggle) {
-        const intro = $('card-host').querySelector('[data-intro]');
-        const collapsed = intro.classList.toggle('is-collapsed');
-        toggle.textContent = collapsed ? '展开全部 ⌄' : '收起 ⌃';
-        return;
+      // 点背板也能取消
+      if (e.target.classList && e.target.classList.contains('modal-backdrop')) {
+        el.modalRoot.removeEventListener('click', onModal);
+        closeModal();
       }
+    });
+  }
 
-      const btn = event.target.closest('.score-btn');
-      if (!btn) return;
+  function doSubmit() {
+    if (S.submitting) return;
+    S.submitting = true;
+    updateSubmitState();
 
-      const card = btn.closest('.card');
-      const row = btn.closest('.dim-row');
-      if (!card || !row) return;
+    var roundId = S.roundId;
+    var payload = {
+      roundId: roundId,
+      scores: S.dimensions.map(function (d) {
+        return { dimensionId: d.id, value: S.draft[d.id] };
+      }),
+    };
 
-      const contestantId = Number(card.dataset.contestantId);
-      const dimensionId = Number(row.dataset.dimensionId);
-      const value = Number(btn.dataset.value);
+    fetch('/api/v/' + encodeURIComponent(S.code) + '/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+      .then(function (r) {
+        return r.json().then(function (d) {
+          return { status: r.status, data: d || {} };
+        });
+      })
+      .then(function (res) {
+        S.submitting = false;
 
-      setScore(contestantId, dimensionId, value);
-      row.querySelectorAll('.score-btn').forEach((b) => {
-        const active = Number(b.dataset.value) === value;
-        b.classList.toggle('is-active', active);
-        b.setAttribute('aria-pressed', String(active));
+        if (res.data.ok) {
+          clearDraft(roundId);
+          S.draft = {};
+          S.roundId = roundId;
+          return poll(); // 立刻同步一次，由 poll 统一渲染「已提交」
+        }
+
+        // 本场已经结束了（主持人抢先切走）—— 这一场记为弃权，不能假装提交成功
+        if (res.data.error === 'round_closed' || res.data.error === 'already_submitted') {
+          clearDraft(roundId);
+          S.draft = {};
+          S.renderedRoundId = null;
+          return poll();
+        }
+
+        updateSubmitState();
+        alert(res.data.message || '提交失败，请重试。');
+      })
+      .catch(function () {
+        S.submitting = false;
+        updateSubmitState();
+        alert('连不上服务器，评分没有提交。请检查网络后重试 —— 你打的分数还在本机。');
       });
-      row.classList.remove('is-missing');
-      updateProgress();
-    });
-
-    $('btn-prev').addEventListener('click', () => goTo(state.index - 1));
-
-    $('btn-next').addEventListener('click', () => {
-      if (state.index === state.contestants.length - 1) {
-        if (findMissing().length) showMissingModal(findMissing());
-        else showConfirmModal();
-      } else {
-        goTo(state.index + 1);
-      }
-    });
-
-    $('btn-jump-submit').addEventListener('click', () => goTo(state.contestants.length - 1));
-
-    // 关闭页面前把草稿落盘（防抖窗口内可能还没写）
-    window.addEventListener('pagehide', () => {
-      if (Object.keys(state.draft).length) saveDraftNow();
-    });
   }
 
-  /* --------------------------------- 启动 -------------------------------- */
+  el.btnSubmit.addEventListener('click', function () {
+    if (missingDims().length) return;
+    confirmModal();
+  });
 
-  async function init() {
-    if (!CODE) {
-      showBlocked('❓', '链接无效', '地址里没有短码，请向组织者索取完整的投票链接。');
-      return;
-    }
+  // 息屏 / 切后台回来时立刻同步一次；移动浏览器会节流定时器
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) poll();
+  });
 
-    let res;
-    let data;
-    try {
-      res = await fetch(`/api/v/${CODE}/data`, { headers: { Accept: 'application/json' } });
-      data = await res.json().catch(() => null);
-    } catch {
-      showBlocked('📡', '连接失败', '连不上服务器。请确认手机和电脑连的是同一个 WiFi，然后刷新重试。');
-      return;
-    }
+  // 离开页面时把草稿落盘（saveDraft 是实时的，这里只是兜底）
+  window.addEventListener('pagehide', saveDraft);
 
-    const marker = readSubmittedMarker();
-
-    if (!res.ok || !data || !data.ok) {
-      const error = (data && data.error) || '';
-      if (error === 'revoked') {
-        showBlocked('🚫', '链接已作废', '该链接已被组织者作废。如有疑问，请联系组织者索取新链接。');
-      } else if (error === 'not_found') {
-        showBlocked('❓', '链接无效', '找不到这个链接，请向组织者确认地址是否完整。');
-      } else {
-        showBlocked('⚠️', '无法打开', (data && data.message) || '服务返回了异常状态，请稍后重试。');
-      }
-      return;
-    }
-
-    state.activityName = data.activityName;
-    state.dimensions = data.dimensions || [];
-    state.contestants = data.contestants || [];
-
-    if (!state.dimensions.length || !state.contestants.length) {
-      showBlocked('🛠️', '活动尚未配置', '组织者还没有配置参赛者或评分维度，请联系组织者。');
-      return;
-    }
-
-    // 已提交：本地有快照就回显，没有就给一句友好说明（PLAN §7.2 边界）
-    if (data.status === 'submitted' || marker) {
-      if (marker && marker.scores) renderDone(marker);
-      else if (data.status === 'submitted') {
-        showBlocked('✅', '本链接已提交过', '这个链接的选票已经在服务器上记录，无需重复提交。');
-      } else {
-        renderDone(marker);
-      }
-      return;
-    }
-
-    if (data.phase !== 'open') {
-      showBlocked('🔒', '投票已结束', '本次投票已经封盘，无法再打分。感谢关注。');
-      return;
-    }
-
-    const draft = readDraft();
-    const hasDraft = Boolean(draft && Object.keys(draft).length);
-    if (hasDraft) {
-      state.draft = draft;
-      // 清掉配置里已经不存在的参赛者/维度留下的残留
-      for (const cid of Object.keys(state.draft)) {
-        if (!state.contestants.some((c) => String(c.id) === String(cid))) delete state.draft[cid];
-      }
-    }
-
-    bindEvents();
-    renderIntro(hasDraft);
-  }
-
-  init();
+  show('loading');
+  poll();
+  setInterval(poll, POLL_MS);
 })();

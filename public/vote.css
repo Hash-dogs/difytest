@@ -442,3 +442,165 @@
   color: var(--text-faint);
   padding: 8px 0;
 }
+
+/* ================= 2026-09-18 场次模型新增 ================= */
+
+/* ---------------- 登录码输入页 ---------------- */
+
+.code-box {
+  padding: 44px 4px 20px;
+  text-align: center;
+}
+
+.code-title {
+  font-size: 23px;
+  margin: 6px 0 10px;
+}
+
+.code-desc {
+  font-size: 13.5px;
+  color: var(--text-dim);
+  margin-bottom: 22px;
+  line-height: 1.6;
+}
+
+.code-input {
+  width: 100%;
+  padding: 15px 16px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.code-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.code-error {
+  margin-top: 10px;
+  font-size: 13.5px;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.code-box .btn {
+  margin-top: 16px;
+}
+
+/* ---------------- 当前演讲者 ---------------- */
+
+.round-head {
+  padding: 4px 2px 14px;
+}
+
+.round-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.round-name {
+  font-size: 26px;
+  margin: 10px 0 3px;
+}
+
+.round-project {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.round-notice {
+  margin-bottom: 12px;
+}
+
+/* ---------------- 提交区 ---------------- */
+
+.submit-bar {
+  padding: 16px 0 26px;
+}
+
+.submit-bar .btn {
+  margin-top: 8px;
+}
+
+.hint-center {
+  text-align: center;
+  margin-top: 10px;
+  line-height: 1.55;
+}
+
+/* ---------------- 等待动画 ---------------- */
+
+.wait-pulse {
+  width: 54px;
+  height: 54px;
+  margin: 0 auto 18px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  animation: wait-breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes wait-breathe {
+  0%,
+  100% {
+    transform: scale(0.86);
+    opacity: 0.55;
+  }
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.center-state-tight {
+  padding-top: 0;
+}
+
+/* ---------------- 提交确认弹窗 ---------------- */
+
+.confirm-list {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.confirm-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13.5px;
+}
+
+.confirm-row:last-child {
+  border-bottom: 0;
+}
+
+.confirm-row span {
+  color: var(--text-dim);
+}
+
+.confirm-row strong {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 15px;
+  color: var(--accent);
+}

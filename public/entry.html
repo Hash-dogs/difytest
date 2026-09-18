@@ -14,81 +14,159 @@
   </head>
   <body>
     <div class="vote-shell">
-      <div class="center-state">
-        <div class="spinner" id="entry-spinner"></div>
-        <p id="entry-msg">正在进入评分页面…</p>
-        <button type="button" class="btn btn-primary" id="entry-retry" hidden>重试</button>
-      </div>
+      <!-- 已经登录过（localStorage 里有码）→ 校验期间显示这个 -->
+      <section id="screen-loading" class="screen">
+        <div class="center-state">
+          <div class="spinner"></div>
+          <p>正在进入…</p>
+        </div>
+      </section>
+
+      <!-- 短码输入 -->
+      <section id="screen-code" class="screen" hidden>
+        <div class="code-box">
+          <p class="eyebrow">评委打分</p>
+          <h1 class="code-title">请输入登录码</h1>
+          <p class="code-desc">
+            主持人发给你的那串字符，通常是一串 8 位大写字母和数字。
+          </p>
+
+          <input
+            id="code-input"
+            class="input code-input"
+            type="text"
+            inputmode="latin"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="characters"
+            spellcheck="false"
+            maxlength="16"
+            placeholder="例如 7K2M9Q4A"
+            aria-label="登录码"
+          />
+
+          <p class="code-error" id="code-error" hidden></p>
+
+          <button type="button" class="btn btn-primary btn-block" id="btn-login">开始评分</button>
+
+          <p class="hint hint-center">
+            没有登录码？请向主持人索取。<br />
+            每位评委一个码，不要转给别人。
+          </p>
+        </div>
+      </section>
     </div>
 
     <script>
       /**
-       * 固定入口引导页。
-       * 本浏览器已经有 token 就复用（避免重复领、重复投票），
-       * 没有才向服务器领一个新的，然后跳到自己的评分页。
+       * 统一入口页（PLAN §7.1）。
+       *
+       * ⚠️ 2026-09-18 语义变更：这里**不再自动签发新码**。
+       *    旧版扫码后由服务器当场发码，谁扫谁有份；现在必须输入
+       *    管理员一对一发放的登录码 —— 短码因此从「随机标识」变成了凭据。
+       *
+       * 短码同时存在 URL 与 localStorage 两处（PLAN §7.3）：
+       * 企业微信内置浏览器与系统浏览器是两个独立存储域，
+       * 且企微有概率清掉 localStorage，所以两处都要能兜住。
        */
       (function () {
-        var KEY = 'pfxt:token';
-        var spinner = document.getElementById('entry-spinner');
-        var msg = document.getElementById('entry-msg');
-        var retry = document.getElementById('entry-retry');
+        var KEY = 'pfxt:code';
 
-        function readToken() {
+        var loading = document.getElementById('screen-loading');
+        var codeScreen = document.getElementById('screen-code');
+        var input = document.getElementById('code-input');
+        var errBox = document.getElementById('code-error');
+        var btn = document.getElementById('btn-login');
+
+        function lsGet() {
           try {
-            return localStorage.getItem(KEY);
+            return localStorage.getItem(KEY) || '';
           } catch (e) {
-            return null; // 隐私模式下会抛异常，当作没有
+            return '';
           }
         }
 
-        function writeToken(t) {
+        function lsSet(v) {
           try {
-            localStorage.setItem(KEY, t);
+            localStorage.setItem(KEY, v);
           } catch (e) {
-            /* 写不进去也能继续，只是下次要重新领 */
+            /* 写不进去也能继续，只是下次要重新输一遍 */
           }
         }
 
-        function fail(text) {
-          spinner.hidden = true;
-          msg.textContent = text;
-          retry.hidden = false;
+        function showCodeScreen(message) {
+          loading.hidden = true;
+          codeScreen.hidden = false;
+          if (message) {
+            errBox.textContent = message;
+            errBox.hidden = false;
+          }
+          input.focus();
         }
 
-        function claim() {
-          fetch('/api/v/claim', {
+        function normalize(raw) {
+          return String(raw || '')
+            .toUpperCase()
+            .replace(/[^A-Z0-9]/g, '');
+        }
+
+        function submit(raw) {
+          var code = normalize(raw);
+          if (code.length < 4) {
+            errBox.textContent = '登录码看起来不完整，请核对后再试。';
+            errBox.hidden = false;
+            return;
+          }
+
+          btn.disabled = true;
+          errBox.hidden = true;
+
+          fetch('/api/v/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token: readToken() || undefined }),
+            body: JSON.stringify({ code: code }),
           })
             .then(function (r) {
               return r.json().then(function (d) {
-                return { status: r.status, data: d };
+                return d || {};
               });
             })
-            .then(function (res) {
-              var data = res.data || {};
-              if (!data.ok || !data.code) {
-                if (data.error === 'closed') return fail('本次投票已经结束，无法进入评分页面。');
-                if (data.error === 'too_many_claims') return fail('领取过于频繁，请稍等一会儿再试。');
-                return fail(data.message || '无法进入评分页面，请联系组织者。');
+            .then(function (data) {
+              btn.disabled = false;
+              if (!data.ok) {
+                errBox.textContent = data.message || '登录码不正确，请核对。';
+                errBox.hidden = false;
+                return;
               }
-              writeToken(data.code);
+              lsSet(data.code);
               location.replace('/v/' + encodeURIComponent(data.code));
             })
             .catch(function () {
-              fail('连不上服务器。请确认手机和电脑连的是同一个 WiFi，然后重试。');
+              btn.disabled = false;
+              errBox.textContent = '连不上服务器，请检查网络后重试。';
+              errBox.hidden = false;
             });
         }
 
-        retry.addEventListener('click', function () {
-          retry.hidden = true;
-          spinner.hidden = false;
-          msg.textContent = '正在进入评分页面…';
-          claim();
+        btn.addEventListener('click', function () {
+          submit(input.value);
         });
 
-        claim();
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') submit(input.value);
+        });
+
+        // 输入时自动转大写，让人一眼看出打对没有
+        input.addEventListener('input', function () {
+          var at = input.selectionStart;
+          input.value = input.value.toUpperCase();
+          input.setSelectionRange(at, at);
+        });
+
+        // 之前登录过就直接进去，不用再输一遍
+        var saved = lsGet();
+        if (saved) submit(saved);
+        else showCodeScreen();
       })();
     </script>
   </body>

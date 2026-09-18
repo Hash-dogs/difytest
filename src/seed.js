@@ -126,6 +126,9 @@ function ensureSeed() {
   if (getSetting('phase') === null) setSetting('phase', 'open');
   if (getSetting('activity_name') === null) setSetting('activity_name', '内部项目评比');
   if (getSetting('deadline') === null) setSetting('deadline', '');
+  // 评委人数：「已收 X / N」的分母（PLAN §8.1）。
+  // 短码是后台批量签发、一对一发放的，后台无法从库里反推真实评委数，所以必须人工设定。
+  if (getSetting('judge_count') === null) setSetting('judge_count', '11');
 
   return result;
 }
@@ -157,7 +160,10 @@ function boxLine(text, width) {
 
 function printSeedReport(result) {
   const lines = [];
-  if (result.seededDimensions) lines.push('已写入 5 个默认维度（权重 30/25/20/15/10）');
+  if (result.seededDimensions) {
+    const weights = DEFAULT_DIMENSIONS.map((d) => d.weight).join('/');
+    lines.push(`已写入 ${DEFAULT_DIMENSIONS.length} 个默认维度（权重 ${weights}）`);
+  }
   if (result.seededContestants) {
     lines.push(`已写入 ${DEFAULT_CONTESTANTS.length} 名默认参赛者：${DEFAULT_CONTESTANTS.map((c) => c.name).join('、')}`);
   }

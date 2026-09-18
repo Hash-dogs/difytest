@@ -11,10 +11,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { db, DB_PATH, DATA_DIR, getSetting, setSetting, readConfig } = require('../db');
 const { verifyPassword } = require('../seed');
-const { computeResults } = require('../scoring');
+const { computeResults, pickEffectiveRounds, MAX_JUDGES } = require('../scoring');
 const { randomCode } = require('../codes');
 const { entryUrls } = require('../net');
 const { buildXlsx } = require('../xlsx');
+const rounds = require('../rounds');
 const qrcode = require('qrcode-generator');
 
 const router = express.Router();
@@ -96,10 +97,18 @@ function noteFailure(ip) {
 
 /* ------------------------------ 语句 ------------------------------- */
 
-const selectInvite = db.prepare('SELECT code, status, created_at, opened_at, submitted_at FROM invite WHERE code = ?');
-const listInvites = db.prepare('SELECT code, status, created_at, opened_at, submitted_at FROM invite ORDER BY created_at, code');
-const insertInvite = db.prepare('INSERT INTO invite (code, status, created_at) VALUES (?, ?, ?)');
-const revokeInvite = db.prepare(`UPDATE invite SET status = 'revoked' WHERE code = ? AND status IN ('issued', 'opened')`);
+const selectInvite = db.prepare('SELECT code, created_at, revoked FROM invite WHERE code = ?');
+// PLAN §9：submitted_at 列已不存在 —— 提交是「每场一次」的，改由 round_submission 回答
+const listInvites = db.prepare(`
+  SELECT i.code, i.created_at, i.revoked,
+         (SELECT COUNT(*)        FROM round_submission s WHERE s.code = i.code) AS rounds_submitted,
+         (SELECT MAX(s.submitted_at) FROM round_submission s WHERE s.code = i.code) AS last_submitted_at
+    FROM invite i
+   ORDER BY i.created_at, i.code`);
+const insertInvite = db.prepare('INSERT INTO invite (code, created_at) VALUES (?, ?)');
+const revokeInvite = db.prepare('UPDATE invite SET revoked = 1 WHERE code = ?');
+const countRoundsForCode = db.prepare('SELECT COUNT(*) AS n FROM round_submission WHERE code = ?');
+const countRoundsForContestant = db.prepare('SELECT COUNT(*) AS n FROM round WHERE contestant_id = ?');
 
 const updateContestant = db.prepare('UPDATE contestant SET seq = ?, name = ?, project = ?, intro = ? WHERE id = ?');
 const insertContestant = db.prepare('INSERT INTO contestant (seq, name, project, intro) VALUES (?, ?, ?, ?)');
@@ -114,8 +123,9 @@ const selectDimensionIds = db.prepare('SELECT id FROM dimension');
 const contestantIds = () => selectContestantIds.all().map((r) => r.id);
 const dimensionIds = () => selectDimensionIds.all().map((r) => r.id);
 
-const countSubmitted = db.prepare(`SELECT COUNT(*) AS n FROM invite WHERE status = 'submitted'`);
-const countByStatus = db.prepare('SELECT status, COUNT(*) AS n FROM invite GROUP BY status');
+const countCodes = db.prepare('SELECT COUNT(*) AS n FROM invite');
+const countRevokedCodes = db.prepare('SELECT COUNT(*) AS n FROM invite WHERE revoked = 1');
+const countCodesThatSubmitted = db.prepare('SELECT COUNT(DISTINCT code) AS n FROM round_submission');
 
 /* ----------------------------- 工具 ------------------------------- */
 
@@ -163,7 +173,12 @@ router.get('/api/admin/session', (req, res) => res.json({ ok: true, authed: isAu
 
 router.get('/api/admin/config', requireAdmin, (req, res) => {
   const config = readConfig();
-  res.json({ ok: true, ...config, submittedCount: countSubmitted.get().n });
+  res.json({
+    ok: true,
+    ...config,
+    // 开赛后维度与权重就锁死了（PLAN §8.2），前端据此禁用对应输入框
+    started: rounds.hasAnyRound(),
+  });
 });
 
 router.put('/api/admin/config', requireAdmin, (req, res) => {
@@ -172,11 +187,21 @@ router.put('/api/admin/config', requireAdmin, (req, res) => {
   const inContestants = Array.isArray(body.contestants) ? body.contestants : null;
   const inDimensions = Array.isArray(body.dimensions) ? body.dimensions : null;
 
+  // 评委人数是「已收 X / N」的分母。短码是后台批量签发、一对一发放的，
+  // 无法从库里反推真实评委数，所以必须人工设定。
+  // 上限 MAX_JUDGES 不是随便定的 —— 计分的 LCM 缩放量级证明依赖它（PLAN §6.3）。
+  const judgeCount = body.judgeCount === undefined ? null : body.judgeCount;
+  if (judgeCount !== null) {
+    if (!Number.isInteger(judgeCount) || judgeCount < 1 || judgeCount > MAX_JUDGES) {
+      return bad(res, `评委人数必须是 1–${MAX_JUDGES} 的整数。`);
+    }
+  }
+
   if (!activityName) return bad(res, '活动名称不能为空。');
   if (!inDimensions || !inDimensions.length) return bad(res, '至少需要 1 个评分维度。');
   if (!inContestants || !inContestants.length) return bad(res, '至少需要 1 个参赛者。');
 
-  // 维度校验：名称非空、权重为整数且合计 = 100（PLAN §9.10）
+  // 维度校验：名称非空、权重为整数且合计 = 100（PLAN §6）
   const dimensions = [];
   let weightTotal = 0;
   for (const d of inDimensions) {
@@ -200,25 +225,41 @@ router.put('/api/admin/config', requireAdmin, (req, res) => {
     contestants.push({ id: c.id ?? null, name, project, intro });
   }
 
-  // 已有提交后禁止增删参赛者/维度（PLAN §6.2、§9.10）——否则历史票会对不上
-  const submittedCount = countSubmitted.get().n;
-  if (submittedCount > 0) {
-    const existingC = new Set(contestantIds());
+  // 开赛后的锁定（PLAN §8.2）。
+  // 判据从「有没有选票」改成「有没有开过场」—— 开了场就意味着已经有评委会看到打分页，
+  // 此时再改权重会让已完成场次的分值被追溯性地改变。
+  if (rounds.hasAnyRound()) {
     const existingD = new Set(dimensionIds());
-    const nextC = new Set(contestants.filter((c) => c.id != null).map((c) => c.id));
     const nextD = new Set(dimensions.filter((d) => d.id != null).map((d) => d.id));
 
-    if (contestants.some((c) => c.id == null)) {
-      return bad(res, `已有 ${submittedCount} 张选票提交，不能再新增参赛者。`, 409, 'config_locked');
-    }
     if (dimensions.some((d) => d.id == null)) {
-      return bad(res, `已有 ${submittedCount} 张选票提交，不能再新增评分维度。`, 409, 'config_locked');
-    }
-    if (nextC.size !== existingC.size || [...existingC].some((id) => !nextC.has(id))) {
-      return bad(res, `已有 ${submittedCount} 张选票提交，不能再删除参赛者。`, 409, 'config_locked');
+      return bad(res, '比赛已经开始，不能再新增评分维度。', 409, 'config_locked');
     }
     if (nextD.size !== existingD.size || [...existingD].some((id) => !nextD.has(id))) {
-      return bad(res, `已有 ${submittedCount} 张选票提交，不能再删除评分维度。`, 409, 'config_locked');
+      return bad(res, '比赛已经开始，不能再删除评分维度。', 409, 'config_locked');
+    }
+
+    // 权重冻结：否则可以在场次之间偷改权重，追溯性改变已完成场次的分值
+    for (const d of dimensions) {
+      const cur = db.prepare('SELECT weight FROM dimension WHERE id = ?').get(d.id);
+      if (cur && cur.weight !== d.weight) {
+        return bad(res, '比赛已经开始，不能再修改维度权重。', 409, 'config_locked');
+      }
+    }
+
+    // 参赛者：允许改名、允许中途加人（临时补位是真实需求），
+    // 但**不允许删除已经上过场的** —— 那会让 round 关联不到人、分数变成孤儿。
+    const nextC = new Set(contestants.filter((c) => c.id != null).map((c) => c.id));
+    for (const id of contestantIds()) {
+      if (nextC.has(id)) continue;
+      if (countRoundsForContestant.get(id).n > 0) {
+        return bad(
+          res,
+          '这位演讲者已经上过场，不能删除。要退出请不要再给他开场次。',
+          409,
+          'config_locked'
+        );
+      }
     }
   }
 
@@ -230,6 +271,7 @@ router.put('/api/admin/config', requireAdmin, (req, res) => {
 
   db.transaction(() => {
     setSetting('activity_name', activityName);
+    if (judgeCount !== null) setSetting('judge_count', judgeCount);
 
     const keepC = [];
     contestants.forEach((c, i) => {
@@ -273,7 +315,12 @@ router.get('/api/admin/entry', requireAdmin, (req, res) => {
 router.get('/api/admin/qrcode.svg', requireAdmin, (req, res) => {
   const urls = entryUrls(PORT);
   if (!urls.length) {
-    return bad(res, '没有检测到局域网 IPv4 地址，无法生成二维码。请确认电脑已连上内网。', 503, 'no_lan_address');
+    return bad(
+      res,
+      '没有可用的入口地址，无法生成二维码。请设置环境变量 PFXT_PUBLIC_URL，或确认本机已连上网。',
+      503,
+      'no_entry_url'
+    );
   }
 
   const wanted = String(req.query.ip || '');
@@ -302,7 +349,7 @@ router.post('/api/admin/invites', requireAdmin, (req, res) => {
       if ((guard += 1) > count * 100) throw new Error('短码空间耗尽，请调大 CODE_LENGTH');
       const code = randomCode();
       try {
-        insertInvite.run(code, 'issued', now);
+        insertInvite.run(code, now);
         created.push(code);
       } catch (err) {
         if (!String(err.code || '').startsWith('SQLITE_CONSTRAINT')) throw err;
@@ -316,99 +363,245 @@ router.post('/api/admin/invites', requireAdmin, (req, res) => {
 router.post('/api/admin/invites/:code/revoke', requireAdmin, (req, res) => {
   const { code } = req.params;
   const invite = selectInvite.get(code);
-  if (!invite) return bad(res, '链接不存在。', 404, 'not_found');
+  if (!invite) return bad(res, '登录码不存在。', 404, 'not_found');
 
-  // PLAN §6.2：submitted 不可作废 —— 选票已与身份脱钩，无法定位该删哪张票
-  if (invite.status === 'submitted') {
+  // 交过票就不能作废 —— 选票已与身份脱钩，无法定位该删哪张票。
+  // 强行作废只会造成「标记作废但票仍在计」的矛盾。
+  if (countRoundsForCode.get(code).n > 0) {
     return bad(
       res,
-      '该链接已提交选票。选票已与身份脱钩、无法定位删除，因此不可作废；强行作废只会造成「标记作废但票仍在计」的矛盾。',
+      '这个登录码已经提交过评分。选票已与身份脱钩、无法定位删除，因此不可作废；强行作废只会造成「标记作废但票仍在计」的矛盾。',
       409,
       'submitted_locked'
     );
   }
-  if (invite.status === 'revoked') return res.json({ ok: true, alreadyRevoked: true });
+  if (invite.revoked) return res.json({ ok: true, alreadyRevoked: true });
 
   revokeInvite.run(code);
   res.json({ ok: true });
 });
 
-/* ---------------------------- 进度 / 结果 --------------------------- */
+/* ---------------------------- 场次控制 ----------------------------- */
 
-router.get('/api/admin/progress', requireAdmin, (req, res) => {
-  const counts = { issued: 0, opened: 0, submitted: 0, revoked: 0 };
-  for (const row of countByStatus.all()) {
-    if (row.status in counts) counts[row.status] = row.n;
-  }
+const judgeCountOf = () => Number(getSetting('judge_count', '11')) || 11;
 
-  const codes = { issued: [], opened: [], submitted: [], revoked: [] };
-  for (const row of listInvites.all()) {
-    if (row.status in codes) codes[row.status].push(row.code);
+/** 场次总览：当前场次、每场已收/未收、异常告警。取代了旧版的 /progress。 */
+router.get('/api/admin/rounds', requireAdmin, (req, res) => {
+  const judgeCount = judgeCountOf();
+  const all = rounds.listRounds();
+  const live = all.find((r) => r.status === 'live') || null;
+
+  const view = all.map((r) => ({
+    roundId: r.id,
+    seq: r.seq,
+    status: r.status, // live | closed
+    contestantId: r.contestant_id,
+    name: r.name,
+    project: r.project,
+    submitted: r.submitted,
+    judgeCount,
+    // 票数不多于 2 的场次结论不可靠，结果页和这里都要标注（PLAN §5.3）
+    thin: r.submitted > 0 && r.submitted <= 2,
+    // 提交数超过设定的评委人数 —— 现场一定出了状况（多半是清缓存换了新码多投）
+    over: r.submitted > judgeCount,
+  }));
+
+  const totalCodes = countCodes.get().n;
+  const revoked = countRevokedCodes.get().n;
+
+  const anomalies = [];
+  for (const r of view) {
+    if (r.over) {
+      anomalies.push(`第 ${r.seq} 场收到 ${r.submitted} 份评分，超过设定的评委人数 ${judgeCount}。`);
+    }
   }
+  const unstarted = readConfig().contestants.filter(
+    (c) => !all.some((r) => r.contestant_id === c.id)
+  ).length;
 
   res.json({
     ok: true,
     phase: getSetting('phase', 'open'),
     activityName: getSetting('activity_name', '内部项目评比'),
-    counts,
-    total: counts.issued + counts.opened + counts.submitted + counts.revoked,
-    codes, // 「已打开未提交」正是催票的关键信号（PLAN §7.3）
+    judgeCount,
+    live: live
+      ? {
+          roundId: live.id,
+          seq: live.seq,
+          contestantId: live.contestant_id,
+          name: live.name,
+          project: live.project,
+          submitted: live.submitted,
+        }
+      : null,
+    rounds: view,
+    codes: {
+      total: totalCodes,
+      revoked,
+      active: totalCodes - revoked,
+      everSubmitted: countCodesThatSubmitted.get().n,
+    },
+    unstartedContestants: unstarted,
+    anomalies,
   });
 });
 
-router.get('/api/admin/results', requireAdmin, (req, res) => {
-  const config = readConfig();
+/** 开始下一场。可带 contestantId 指定演讲者（临时调序 / 补位）。 */
+router.post('/api/admin/rounds/advance', requireAdmin, (req, res) => {
+  const body = req.body || {};
+  const contestantId = Number.isInteger(body.contestantId) ? body.contestantId : null;
 
-  let rows;
   try {
-    rows = db.prepare('SELECT ballot_id, contestant_id, dimension_id, value FROM score').all();
+    const r = rounds.advance(contestantId);
+    res.json({
+      ok: true,
+      round: { roundId: r.id, seq: r.seq, contestantId: r.contestant_id, name: r.name },
+    });
   } catch (err) {
-    return bad(res, '读取选票失败：' + err.message, 500, 'internal');
+    if (err instanceof rounds.RoundError) return bad(res, err.message, err.status, err.code);
+    throw err;
   }
+});
+
+/**
+ * 重开一场（PLAN §5.4）。
+ * 不是把旧场次改回 live —— 那会让已交过的评委被允许再交一张、票数凭空翻倍。
+ * 而是为同一位演讲者**新建一场**，计分时只取 seq 最大的那场。
+ */
+router.post('/api/admin/rounds/:id/reopen', requireAdmin, (req, res) => {
+  const roundId = Number(req.params.id);
+  if (!Number.isInteger(roundId)) return bad(res, '场次编号不正确。');
+
+  try {
+    const r = rounds.reopenRound(roundId);
+    res.json({
+      ok: true,
+      round: { roundId: r.id, seq: r.seq, contestantId: r.contestant_id, name: r.name },
+      message: `${r.name} 已重开新的一场，原来的那一场作废不再计分。已经交过的评委需要重新打一次。`,
+    });
+  } catch (err) {
+    if (err instanceof rounds.RoundError) return bad(res, err.message, err.status, err.code);
+    throw err;
+  }
+});
+
+/**
+ * 清空演练数据（PLAN §8.3）。彩排完必定要用，否则只能手工删库，更危险。
+ * 保留演讲者、维度、登录码、管理员设置。
+ */
+router.post('/api/admin/reset', requireAdmin, (req, res) => {
+  if (!(req.body && req.body.confirm === 'RESET')) {
+    return bad(res, '清空演练数据需要二次确认。', 400, 'confirm_required');
+  }
+  const cleared = rounds.resetAll();
+  res.json({
+    ok: true,
+    cleared,
+    message:
+      '场次与选票已清空。演讲者、维度、登录码、管理员设置都保留，登录码可以继续使用。',
+  });
+});
+
+/* ------------------------------ 结果 ------------------------------- */
+
+/** 组装计分输入。results 与 results.xlsx 共用，避免两处逻辑漂移。 */
+function computeCurrentResults() {
+  const config = readConfig();
+  const all = rounds.listRounds();
+
+  // 同一演讲者重开过多场时，只取 seq 最大的那场参与排名
+  const { effective, supersededIds } = pickEffectiveRounds(
+    all.map((r) => ({ id: r.id, contestantId: r.contestant_id, seq: r.seq }))
+  );
+
+  const byRoundId = new Map(all.map((r) => [r.id, r]));
+  const roundInputs = effective.map((r) => {
+    const row = byRoundId.get(r.id);
+    return {
+      id: row.id,
+      seq: row.seq,
+      contestantId: row.contestant_id,
+      contestantSeq: row.contestant_seq,
+      contestantName: row.name,
+      contestantProject: row.project,
+    };
+  });
+
+  const scoreRows = db
+    .prepare('SELECT ballot_id, round_id, dimension_id, value FROM score')
+    .all();
 
   const byBallot = new Map();
-  for (const r of rows) {
-    let arr = byBallot.get(r.ballot_id);
-    if (!arr) byBallot.set(r.ballot_id, (arr = []));
-    arr.push(r);
+  for (const s of scoreRows) {
+    let arr = byBallot.get(s.ballot_id);
+    if (!arr) byBallot.set(s.ballot_id, (arr = []));
+    arr.push(s);
   }
 
-  let result;
+  const result = computeResults({
+    rounds: roundInputs,
+    dimensions: config.dimensions,
+    ballots: [...byBallot.values()],
+  });
+
+  // 交叉核对：round_submission 是「已收」，score 是「实到票」。
+  // 两者不等说明有并发写入没走事务，属于必须暴露的异常（PLAN §11）。
+  const submittedByRound = new Map(all.map((r) => [r.id, r.submitted]));
+  const mismatches = result.rounds
+    .filter((row) => !row.blank && submittedByRound.get(row.roundId) !== row.n)
+    .map((row) => ({
+      roundId: row.roundId,
+      name: row.name,
+      submitted: submittedByRound.get(row.roundId),
+      ballots: row.n,
+    }));
+
+  return { config, all, supersededIds, submittedByRound, result, mismatches };
+}
+
+router.get('/api/admin/results', requireAdmin, (req, res) => {
+  let computed;
   try {
-    result = computeResults({
-      contestants: config.contestants,
-      dimensions: config.dimensions,
-      ballots: [...byBallot.values()],
-    });
+    computed = computeCurrentResults();
   } catch (err) {
     return bad(res, err.message, 500, 'scoring_failed');
   }
 
-  const submittedCount = countSubmitted.get().n;
+  const { config, all, supersededIds, submittedByRound, result, mismatches } = computed;
+  const judgeCount = judgeCountOf();
 
   res.json({
     ok: true,
     phase: config.phase,
     activityName: config.activityName,
-    n: result.n,
-    k: result.k,
-    trimmed: result.trimmed,
+    judgeCount,
+    lcm: result.lcm,
+    orphans: result.orphans,
     insufficient: result.insufficient,
     dimensions: config.dimensions,
-    rows: result.rows,
+    // 「已收 X / N」的 X 取自 round_submission，与选票张数分开报，便于交叉核对
+    rows: result.rounds.map((row) => ({
+      ...row,
+      submitted: submittedByRound.get(row.roundId) ?? 0,
+      judgeCount,
+    })),
+    // 被重开顶掉的旧场次：后台置灰展示，不计分（PLAN §5.4）
+    superseded: all
+      .filter((r) => supersededIds.has(r.id))
+      .map((r) => ({ roundId: r.id, seq: r.seq, name: r.name, submitted: r.submitted })),
     integrity: {
-      ok: submittedCount === result.n,
-      submittedCount,
-      ballotCount: result.n,
-      message:
-        submittedCount === result.n
-          ? null
-          : `已标记提交 ${submittedCount} 个链接，但库里有 ${result.n} 张选票，两者不一致，请核查。`,
+      ok: mismatches.length === 0,
+      mismatches,
+      message: mismatches.length
+        ? '有场次的「已收份数」与库里的选票张数对不上，请核查。'
+        : null,
     },
   });
 });
 
 /* ---------------------------- 导出 Excel ---------------------------- */
+
+const num = (v, digits = 4) => (v === null || v === undefined ? '—' : Number(v.toFixed(digits)));
 
 /** 把计分结果摊平成两个工作表 + 一张说明页 */
 function buildResultSheets(data) {
@@ -417,20 +610,21 @@ function buildResultSheets(data) {
 
   // ---- Sheet 1：汇总（与页面上的排名表一致）----
   const summary = [
-    ['名次', '参赛者', '项目', ...dims.map((d) => `${d.name}（${d.weight}%）`), '加权总分'],
+    ['名次', '演讲者', '项目', ...dims.map((d) => `${d.name}（${d.weight}%）`), '加权总分', '本场票数'],
     ...rows.map((r) => [
-      r.rank,
+      r.blank ? '—' : r.rank,
       r.name,
       r.project,
-      ...dims.map((d) => Number((r.margins[d.id] ?? 0).toFixed(4))),
-      Number((r.total ?? 0).toFixed(4)),
+      ...dims.map((d) => num(r.margins[d.id])),
+      num(r.total),
+      r.n,
     ]),
   ];
 
-  // ---- Sheet 2：维度明细（每个参赛者 × 每个维度）----
+  // ---- Sheet 2：维度明细（每位演讲者 × 每个维度）----
   const detail = [
     [
-      '参赛者',
+      '演讲者',
       '项目',
       '维度',
       '权重',
@@ -439,17 +633,33 @@ function buildResultSheets(data) {
       '3分票数',
       '4分票数',
       '5分票数',
+      '去分方式',
       '去掉的最高分',
       '去掉的最低分',
       '去分后票数',
       '去分后总分',
       '该维度均分',
+      '备注',
     ],
   ];
   for (const r of rows) {
     for (const d of dims) {
       const info = r.details[d.id];
       if (!info) continue;
+
+      const mode =
+        info.keptCount === 0
+          ? '无票'
+          : info.keptCount === 1
+            ? '仅 1 票，不去分'
+            : info.trimmed
+              ? '去一高一低'
+              : '票数不足 3，不去分';
+
+      const note = [];
+      if (info.single) note.push('⚠️ 该维度只有 1 票，等于由一位评委决定');
+      if (info.keptCount === 2) note.push('只有 2 票，未去分');
+
       detail.push([
         r.name,
         r.project,
@@ -460,35 +670,51 @@ function buildResultSheets(data) {
         info.counts[3],
         info.counts[4],
         info.counts[5],
+        mode,
         info.removedHigh,
         info.removedLow,
         info.keptCount,
         info.sum,
-        Number(info.margin.toFixed(4)),
+        num(info.margin),
+        note.join('；'),
       ]);
     }
   }
 
   // ---- Sheet 3：计分说明（含匿名边界的书面记录）----
-  const kText =
-    data.k >= 1
-      ? `每维度去掉一个最高分和一个最低分后，以 ${data.k} 张计平均`
-      : `去掉一高一低后已无剩余分数（有效票数 ${data.n} 张，需至少 3 张才能计分）`;
+  const thinRounds = rows.filter((r) => r.thin);
+  const thinText = thinRounds.length
+    ? `第 ${thinRounds.map((r) => r.seq).join('、')} 场收到的有效票数不超过 2 张，结论不可靠，请谨慎解读。`
+    : '无';
+
   const info = [
     ['项目', '内容'],
     ['活动名称', data.activityName || ''],
     ['导出时间', new Date().toLocaleString('zh-CN', { hour12: false })],
-    ['有效选票数 N', data.n],
-    ['每单元格保留票数 k', data.k],
-    ['计分口径', kText],
+    ['评委人数（设定值）', data.judgeCount],
+    ['场次数', rows.length],
+    ['缩放基准 L（各格保留票数的最小公倍数）', data.lcm],
+    ['计分口径', '每一位演讲者单独计分：每个维度按**实际收到的票数**处理'],
+    ['　· 3 票及以上', '升序排序，去掉一个最高分和一个最低分，其余取平均'],
+    ['　· 正好 2 票', '两个分数直接取平均（去分会把分数去光，故不去分）'],
+    ['　· 只有 1 票', '直接采用该分数，并在明细页标注「仅 1 票」'],
+    ['　· 一张票都没有', '该场不计分，名次栏显示「—」，不影响其它场次'],
     ['维度权重', dims.map((d) => `${d.name} ${d.weight}%`).join(' / ')],
     ['加权总分算法', 'Σ(维度均分 × 权重) ÷ 100，取值范围 1.00–5.00'],
-    ['排名规则', '按整数加权分降序，并列名次相同、下一名跳号'],
+    ['排名规则', '按统一缩放后的**整数**加权分降序比较，并列名次相同、下一名跳号'],
+    ['薄数据场次', thinText],
     ['', ''],
     [
       '⚠️ 匿名说明',
-      '本表不含、也无法推算「哪位评委打了什么分」。邀请码与选票在数据库层面没有任何关联键，' +
-        '系统只记录「某个链接是否已提交」，不记录「提交了什么」。这是设计约定，不是导出时的取舍。',
+      '本表不含、也无法推算「哪位评委给谁打了多少分」。登录码与选票在数据库层面没有任何关联键，' +
+        '系统只记录「某个登录码在第几场提交过」，不记录「提交了什么」。这是设计约定，不是导出时的取舍。',
+    ],
+    [
+      '⚠️ 必须如实告知的边界',
+      '① 如果某一场只有一位评委提交，那一场唯一的选票必然出自这位评委 —— 这是「一场一投 + 主持人随时切换」' +
+        '模式的固有性质，无法通过技术手段消除，因此本表对票数≤2 的场次逐条标注。' +
+        '② 系统记录了每个登录码的提交时刻，因此提交的先后顺序是可查的。选票本身没有任何时间戳，' +
+        '无法把某张票对应到某人，但在场次颗粒度上，先后顺序并非完全不可观察。',
     ],
   ];
 
@@ -500,33 +726,16 @@ function buildResultSheets(data) {
 }
 
 router.get('/api/admin/results.xlsx', requireAdmin, (req, res) => {
-  const config = readConfig();
-
-  let scoreRows;
+  let computed;
   try {
-    scoreRows = db.prepare('SELECT ballot_id, contestant_id, dimension_id, value FROM score').all();
-  } catch (err) {
-    return bad(res, '读取选票失败：' + err.message, 500, 'internal');
-  }
-
-  const byBallot = new Map();
-  for (const r of scoreRows) {
-    let arr = byBallot.get(r.ballot_id);
-    if (!arr) byBallot.set(r.ballot_id, (arr = []));
-    arr.push(r);
-  }
-
-  let result;
-  try {
-    result = computeResults({
-      contestants: config.contestants,
-      dimensions: config.dimensions,
-      ballots: [...byBallot.values()],
-    });
+    computed = computeCurrentResults();
   } catch (err) {
     return bad(res, err.message, 500, 'scoring_failed');
   }
 
+  const { config, submittedByRound, result } = computed;
+
+  // 只有「全场次都空白」才拒绝导出；个别场次票少或没票不该挡住导出（PLAN §6.2）
   if (result.insufficient) {
     return bad(res, '还没有任何有效选票，无法导出。', 409, 'no_data');
   }
@@ -534,9 +743,12 @@ router.get('/api/admin/results.xlsx', requireAdmin, (req, res) => {
   const sheets = buildResultSheets({
     activityName: config.activityName,
     dimensions: config.dimensions,
-    rows: result.rows,
-    n: result.n,
-    k: result.k,
+    judgeCount: judgeCountOf(),
+    lcm: result.lcm,
+    rows: result.rounds.map((row) => ({
+      ...row,
+      submitted: submittedByRound.get(row.roundId) ?? 0,
+    })),
   });
 
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');

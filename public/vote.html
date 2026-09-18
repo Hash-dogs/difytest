@@ -22,67 +22,62 @@
         </div>
       </section>
 
-      <!-- 阻断态：链接无效 / 已作废 / 已提交 -->
+      <!-- 阻断态：登录码无效 / 已作废 / 投票已结束 -->
       <section id="screen-blocked" class="screen" hidden>
         <div class="center-state">
           <div class="big-icon" id="blocked-icon">⚠️</div>
           <h2 id="blocked-title"></h2>
           <p id="blocked-desc"></p>
+          <a class="btn btn-primary" id="blocked-action" href="/v" hidden>重新输入登录码</a>
         </div>
       </section>
 
-      <!-- 说明页 -->
-      <section id="screen-intro" class="screen" hidden>
-        <header class="intro-head">
-          <p class="eyebrow">评委打分</p>
-          <h1 id="intro-activity"></h1>
+      <!-- 等待主持人开始下一位 -->
+      <section id="screen-waiting" class="screen" hidden>
+        <div class="center-state">
+          <div class="wait-pulse"></div>
+          <h2 id="waiting-title">等待主持人开始下一位</h2>
+          <p id="waiting-desc">当前没有正在进行的演讲者。页面会自动刷新，不用手动操作。</p>
+        </div>
+      </section>
+
+      <!-- 打分页：**只有当前这一位演讲者** -->
+      <section id="screen-score" class="screen" hidden>
+        <header class="round-head">
+          <span class="round-badge" id="round-badge"></span>
+          <h1 class="round-name" id="round-name"></h1>
+          <p class="round-project" id="round-project"></p>
         </header>
 
-        <div class="notice notice-warn intro-warn">
-          <span class="notice-icon">⚠️</span>
-          <span>
-            <strong>提交后无法修改。</strong>请全部打完、确认无误后再提交。<br />
-            共 <span id="intro-count"></span> 个评分点，必须全部打分，不能弃权。
-          </span>
+        <div class="card">
+          <div class="card-head" id="round-intro-wrap" hidden>
+            <p class="card-intro" id="round-intro"></p>
+          </div>
+          <div id="dim-host"></div>
         </div>
 
-        <h2 class="section-title">评分维度</h2>
-        <ol class="dim-brief" id="intro-dims"></ol>
-
-        <div class="intro-actions">
-          <button type="button" class="btn btn-primary btn-block" id="btn-start">开始打分</button>
-          <p class="hint" id="intro-resume-hint" hidden></p>
+        <div class="submit-bar">
+          <p class="hint" id="score-hint"></p>
+          <button type="button" class="btn btn-primary btn-block" id="btn-submit" disabled>
+            提交本场评分
+          </button>
+          <p class="hint hint-center">
+            <strong>提交后不可修改</strong>，且看不到其他演讲者的任何信息。
+          </p>
         </div>
       </section>
 
-      <!-- 打分页 -->
-      <section id="screen-score" class="screen" hidden>
-        <div class="progress-bar-wrap">
-          <div class="progress-meta">
-            <span id="progress-text">已完成 0 / 0 人</span>
-            <button type="button" class="btn btn-sm" id="btn-jump-submit" hidden>去提交 →</button>
-          </div>
-          <div class="progress-track">
-            <div class="progress-fill" id="progress-fill"></div>
-          </div>
-        </div>
-
-        <div id="card-host"></div>
-
-        <nav class="score-nav">
-          <button type="button" class="btn" id="btn-prev">‹ 上一位</button>
-          <button type="button" class="btn btn-primary" id="btn-next">下一位 ›</button>
-        </nav>
-      </section>
-
-      <!-- 完成页 -->
-      <section id="screen-done" class="screen" hidden>
+      <!-- 本场已提交，等待下一位 -->
+      <section id="screen-submitted" class="screen" hidden>
         <div class="done-head">
           <div class="done-check">✓</div>
-          <h1>提交成功</h1>
-          <p>感谢您的评分。选票已匿名记录，<strong>不可修改</strong>。</p>
+          <h1>本场已提交</h1>
+          <p id="submitted-desc">评分已匿名记录，<strong>不可修改</strong>。</p>
         </div>
-        <div id="done-summary"></div>
+        <div class="center-state center-state-tight">
+          <div class="wait-pulse"></div>
+          <p>等待主持人开始下一位。页面会自动刷新。</p>
+        </div>
       </section>
     </div>
 

@@ -675,3 +675,96 @@
     font-size: 34px;
   }
 }
+
+/* ================= 2026-09-18 场次模型新增 ================= */
+
+/* ---------------- 当前场次控制条 ---------------- */
+
+.live-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.live-info {
+  min-width: 0;
+}
+
+.live-label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+.live-name {
+  font-size: 24px;
+  font-weight: 700;
+  margin: 4px 0 3px;
+  line-height: 1.25;
+}
+
+.live-count {
+  font-size: 13.5px;
+  color: var(--text-dim);
+}
+
+.btn-lg {
+  min-height: 52px;
+  padding: 12px 26px;
+  font-size: 16px;
+  flex: none;
+}
+
+.input-sm {
+  max-width: 140px;
+}
+
+/* ---------------- 状态角标 ---------------- */
+
+.flag-live {
+  color: var(--accent);
+}
+
+.flag-warn {
+  color: var(--warn);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.flag-danger {
+  color: var(--danger);
+  white-space: nowrap;
+}
+
+/* ---------------- 危险操作区 ---------------- */
+
+.danger-zone {
+  margin-top: 30px;
+  padding: 14px 18px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.danger-zone summary {
+  cursor: pointer;
+  font-weight: 650;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+.danger-zone[open] summary {
+  margin-bottom: 10px;
+}
+
+.danger-zone .btn {
+  margin-top: 6px;
+}

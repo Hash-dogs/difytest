@@ -43,14 +43,73 @@
           </div>
         </div>
         <nav class="tabs" id="tabs">
-          <button type="button" class="tab" data-tab="config">配置</button>
-          <button type="button" class="tab" data-tab="invites">投票链接</button>
-          <button type="button" class="tab" data-tab="progress">进度</button>
+          <button type="button" class="tab" data-tab="rounds">场次</button>
+          <button type="button" class="tab" data-tab="invites">登录码</button>
           <button type="button" class="tab" data-tab="results">结果</button>
+          <button type="button" class="tab" data-tab="config">配置</button>
         </nav>
       </header>
 
       <main class="main">
+        <!-- ---------------------------- 场次 ---------------------------- -->
+        <section class="tab-panel" id="tab-rounds" hidden>
+          <div class="live-bar">
+            <div class="live-info">
+              <div class="live-label">当前场次</div>
+              <div class="live-name" id="live-name">—</div>
+              <div class="live-count" id="live-count"></div>
+            </div>
+            <button type="button" class="btn btn-primary btn-lg" id="btn-advance">开始第一位 ▶</button>
+          </div>
+
+          <div id="rounds-anomaly" hidden class="notice notice-danger" style="margin-top:14px">
+            <span class="notice-icon">⚠️</span><span id="rounds-anomaly-text"></span>
+          </div>
+
+          <div class="gen-row" style="margin-top:16px">
+            <label class="gen-field">
+              <span class="field-label">跳到指定演讲者（临时调序 / 中途补位）</span>
+              <select class="input" id="jump-contestant"></select>
+            </label>
+            <button type="button" class="btn" id="btn-jump">开始这一位</button>
+          </div>
+
+          <div class="panel-head" style="margin-top:26px">
+            <h3>场次记录</h3>
+            <div class="panel-head-actions">
+              <span class="weight-sum" id="codes-summary"></span>
+              <button type="button" class="btn btn-sm" id="btn-refresh-rounds">刷新</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="grid" id="round-table">
+              <thead>
+                <tr>
+                  <th class="col-seq">#</th>
+                  <th>演讲者</th>
+                  <th>状态</th>
+                  <th class="num-cell">已收 / 应到</th>
+                  <th class="col-op"></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="hint">
+            未提交的评委记为弃权。<b>「超员」</b>表示收到的份数超过了设定的评委人数，
+            通常意味着有人清掉浏览器缓存后又拿到了新的登录码，请当场核对。
+          </p>
+
+          <details class="danger-zone">
+            <summary>危险操作</summary>
+            <p class="hint">
+              彩排后清空演练数据：删掉<b>所有场次和选票</b>，保留演讲者名单、评分维度和登录码。
+              登录码不会失效，可以继续使用。
+            </p>
+            <button type="button" class="btn btn-danger" id="btn-reset">清空演练数据</button>
+          </details>
+        </section>
+
         <!-- ---------------------------- 配置 ---------------------------- -->
         <section class="tab-panel" id="tab-config" hidden>
           <div class="panel-head">
@@ -66,6 +125,15 @@
             <span class="field-label">活动名称</span>
             <input class="input" id="config-activity" maxlength="60" />
           </label>
+
+          <label class="field">
+            <span class="field-label">评委人数</span>
+            <input class="input input-sm" type="number" id="config-judge-count" min="1" max="20" />
+          </label>
+          <p class="hint" style="margin-top:-8px">
+            「已收 X / N」里的 N。登录码是后台批量签发、一对一发放的，系统无法从库里反推真实人数，
+            所以要在这里填。上限 20 —— 计分用的整数缩放依赖这个上限。
+          </p>
 
           <div class="panel-head">
             <h3>评分维度</h3>
@@ -135,10 +203,10 @@
               <img id="entry-qr-img" alt="评委扫码入口二维码" />
             </div>
             <div class="entry-info">
-              <h3>评委统一扫码入口</h3>
+              <h3>评委统一入口</h3>
               <p class="hint">
-                所有评委扫同一个二维码。扫码后系统会给这台设备当场签发一个专属评分链接，
-                之后打分、提交都在各自的链接里完成。<b>二维码可以印死、投影、重复使用。</b>
+                所有评委扫同一个二维码（或在企业微信群里发这个地址）。页面上要求输入
+                <b>登录码</b> —— 每人一个，请一对一发给评委。<b>二维码可以印死、投影、重复使用。</b>
               </p>
               <label class="field" style="margin-top:12px">
                 <span class="field-label">入口地址</span>
@@ -153,15 +221,15 @@
           </div>
 
           <div class="panel-head" style="margin-top:30px">
-            <h2>投票链接</h2>
+            <h2>登录码</h2>
             <div class="panel-head-actions">
-              <button type="button" class="btn btn-sm" id="btn-copy-all">复制全部链接</button>
+              <button type="button" class="btn btn-sm" id="btn-copy-all">复制全部登录码</button>
               <button type="button" class="btn btn-sm" id="btn-refresh-invites">刷新</button>
             </div>
           </div>
           <p class="hint">
-            下面是所有已签发出去的链接（含扫码自动签发的）。一般不需要手工生成，
-            除非你要给某位评委指定一条固定链接。
+            每个码发给一位评委。<b>登录码就是身份凭证，持有即可投票</b>，请勿在公开群里转发，
+            也不要重复发同一个码给两个人。
           </p>
 
           <div class="gen-row" style="margin-top:14px">
@@ -169,52 +237,23 @@
               <span class="field-label">生成数量</span>
               <input class="input" type="number" id="invite-count" value="20" min="1" max="500" />
             </label>
-            <button type="button" class="btn btn-primary" id="btn-generate">生成链接</button>
+            <button type="button" class="btn btn-primary" id="btn-generate">生成登录码</button>
           </div>
-          <p class="hint">
-            生成后请人工分发。链接即为评委身份凭证，请勿在公开群里转发。
-          </p>
 
           <div class="table-wrap" style="margin-top:16px">
             <table class="grid" id="invite-table">
               <thead>
                 <tr>
                   <th class="col-seq">#</th>
-                  <th class="col-code">短码</th>
+                  <th class="col-code">登录码</th>
                   <th>状态</th>
-                  <th>打开时间</th>
-                  <th>提交时间</th>
+                  <th class="num-cell">已交场次</th>
+                  <th>最近提交</th>
                   <th class="col-op">操作</th>
                 </tr>
               </thead>
               <tbody></tbody>
             </table>
-          </div>
-        </section>
-
-        <!-- ---------------------------- 进度 ---------------------------- -->
-        <section class="tab-panel" id="tab-progress" hidden>
-          <div class="panel-head">
-            <h2>投票进度</h2>
-            <button type="button" class="btn btn-sm" id="btn-refresh-progress">刷新</button>
-          </div>
-
-          <div class="stat-hero">
-            <div class="stat-hero-num"><span id="progress-submitted">0</span> <small>/ <span id="progress-total">0</span></small></div>
-            <div class="stat-hero-label">已提交</div>
-            <div class="stat-hero-track"><div class="stat-hero-fill" id="progress-hero-fill"></div></div>
-          </div>
-
-          <div class="stat-grid" id="progress-stats"></div>
-
-          <div id="chase-box" hidden>
-            <h3 class="sub-title">已领取但未提交</h3>
-            <p class="hint">
-              下面这些评分链接被领走后没有交卷。⚠️
-              <b>扫码入口不记录身份，所以这里只能看到是哪几条链接，无法知道是谁在用</b>——
-              需要催票请当场点名确认。若必须知道谁没交，请改用「投票链接」页手工为每人指定一条链接。
-            </p>
-            <div class="code-chips" id="chase-chips"></div>
           </div>
         </section>
 

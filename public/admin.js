@@ -14,20 +14,15 @@
       (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]
     );
 
-  const STATUS_LABEL = {
-    issued: '已签发未打开',
-    opened: '已领取未提交',
-    submitted: '已提交',
-    revoked: '已作废',
-  };
-  const STATUS_CLASS = { issued: 'is-faint', opened: 'is-warn', submitted: 'is-ok', revoked: 'is-faint' };
   const REFRESH_MS = 20000;
 
   const state = {
-    activeTab: 'config',
-    configDraft: { activityName: '', contestants: [], dimensions: [] },
-    submittedCount: 0,
+    activeTab: 'rounds',
+    configDraft: { activityName: '', contestants: [], dimensions: [], judgeCount: 11 },
+    // 开赛后维度与权重锁死（PLAN §8.2）
+    started: false,
     results: null,
+    rounds: null,
     timer: null,
   };
 
@@ -211,7 +206,7 @@
     document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('is-active', b.dataset.tab === tab));
     document.querySelectorAll('.tab-panel').forEach((p) => (p.hidden = p.id !== `tab-${tab}`));
     if (tab === 'invites') loadInvites();
-    if (tab === 'progress') loadProgress();
+    if (tab === 'rounds') loadRounds();
     if (tab === 'results') loadResults();
   }
 
@@ -222,24 +217,34 @@
 
   function autoRefresh() {
     if (document.hidden || $('app-screen').hidden) return;
-    if (state.activeTab === 'progress') loadProgress();
+    // 场次页要跟着现场走，刷新要比别处勤 —— 主持人盯着它决定什么时候切下一位
+    if (state.activeTab === 'rounds') loadRounds();
     else if (state.activeTab === 'results') loadResults();
   }
 
   /* -------------------------------- 配置 -------------------------------- */
 
   function setLockNotice() {
-    const locked = state.submittedCount > 0;
+    const locked = state.started;
     $('config-lock-notice').hidden = !locked;
     if (locked) {
       $('config-lock-text').textContent =
-        `已有 ${state.submittedCount} 张选票提交。为保证选票与配置对得上，` +
-        '现在只能修改名称、说明文字和权重，不能再增删参赛者或评分维度。';
+        '比赛已经开始，评分维度与权重已锁定 —— 否则改权重会让已经打完的场次被追溯性改变分值。' +
+        '姓名、项目名、简介仍可修改；可以中途加人，但已经上过场的不能删。';
     }
+    // 锁定时把维度的权重输入框和增删按钮禁用掉，别让人白填一遍再被拒
+    document.querySelectorAll('#dim-table .cell-input[data-field="weight"]').forEach((el) => {
+      el.disabled = locked;
+    });
+    $('btn-add-dim').disabled = locked;
+    document.querySelectorAll('#dim-table .row-del').forEach((el) => {
+      el.disabled = locked;
+    });
   }
 
   function renderConfig() {
     $('config-activity').value = state.configDraft.activityName;
+    $('config-judge-count').value = state.configDraft.judgeCount;
     renderDimRows();
     renderContestantRows();
     updateWeightSum();
@@ -265,6 +270,8 @@
         </tr>`
       )
       .join('');
+    // 重渲染会把输入框的禁用态冲掉，这里补回来（开赛后权重锁定，PLAN §8.2）
+    setLockNotice();
   }
 
   function renderContestantRows() {
@@ -349,6 +356,7 @@
     updateWeightSum();
   });
 
+
   $('btn-add-contestant').addEventListener('click', () => {
     state.configDraft.contestants.push({ id: null, name: '', project: '', intro: '' });
     renderContestantRows();
@@ -395,6 +403,7 @@
   $('btn-save-config').addEventListener('click', async () => {
     const payload = {
       activityName: $('config-activity').value.trim(),
+      judgeCount: Number($('config-judge-count').value),
       dimensions: state.configDraft.dimensions.map((d) => ({
         id: d.id ?? null,
         name: String(d.name || '').trim(),
@@ -416,10 +425,11 @@
       const saved = await api('/api/admin/config', { method: 'PUT', body: JSON.stringify(payload) });
       state.configDraft = {
         activityName: saved.activityName,
+        judgeCount: saved.judgeCount,
         contestants: saved.contestants.map((c) => ({ ...c })),
         dimensions: saved.dimensions.map((d) => ({ ...d })),
       };
-      state.submittedCount = saved.submittedCount;
+      state.started = saved.started;
       renderConfig();
       $('brand-activity').textContent = saved.activityName || '管理后台';
       toast('配置已保存');
@@ -513,28 +523,29 @@
   function renderInvites(invites) {
     const tbody = document.querySelector('#invite-table tbody');
     if (!invites.length) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="6">还没有生成任何链接</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="6">还没有生成任何登录码</td></tr>';
       return;
     }
     tbody.innerHTML = invites
       .map((inv, i) => {
-        const locked = inv.status === 'submitted';
-        const revokeBtn = locked
+        const used = (inv.rounds_submitted || 0) > 0;
+        // 交过票就不能作废 —— 选票已与身份脱钩，无法定位该删哪张票
+        const revokeBtn = used
           ? `<button type="button" class="btn btn-sm" disabled
-               title="已提交的链接不可作废：选票已与身份脱钩，无法定位该删哪张票">不可作废</button>`
-          : inv.status === 'revoked'
+               title="已提交过评分的登录码不可作废：选票已与身份脱钩，无法定位该删哪张票">不可作废</button>`
+          : inv.revoked
             ? '<span class="hint">—</span>'
             : `<button type="button" class="btn btn-sm btn-danger" data-action="revoke" data-code="${esc(inv.code)}">作废</button>`;
 
         return `
           <tr>
             <td class="col-seq">${i + 1}</td>
-            <td class="col-code">${esc(inv.code)}</td>
-            <td>${esc(STATUS_LABEL[inv.status] || inv.status)}</td>
-            <td>${esc(fmtTime(inv.opened_at))}</td>
-            <td>${esc(fmtTime(inv.submitted_at))}</td>
-            <td class="col-op" style="width:180px">
-              <button type="button" class="btn btn-sm" data-action="copy" data-code="${esc(inv.code)}">复制</button>
+            <td class="col-code"><b>${esc(inv.code)}</b></td>
+            <td>${inv.revoked ? '已作废' : '可用'}</td>
+            <td class="num-cell">${inv.rounds_submitted || 0}</td>
+            <td>${esc(fmtTime(inv.last_submitted_at))}</td>
+            <td class="col-op" style="width:200px">
+              <button type="button" class="btn btn-sm" data-action="copy" data-code="${esc(inv.code)}">复制登录码</button>
               ${revokeBtn}
             </td>
           </tr>`;
@@ -548,13 +559,14 @@
     const code = btn.dataset.code;
 
     if (btn.dataset.action === 'copy') {
-      const ok = await copyText(`${location.origin}/v/${code}`);
-      toast(ok ? `已复制 ${code} 的链接` : '复制失败，请手动选中复制', !ok);
+      // 评委是在统一入口页**手输**这个码的，所以复制的就是码本身
+      const ok = await copyText(code);
+      toast(ok ? `已复制登录码 ${code}` : '复制失败，请手动选中复制', !ok);
       return;
     }
 
     if (btn.dataset.action === 'revoke') {
-      confirmModal('作废链接', `确定要作废 ${code} 吗？作废后该链接打开会显示失效页，且无法恢复。`, '作废', async () => {
+      confirmModal('作废登录码', `确定要作废 ${code} 吗？作废后这位评委将无法再进入评分页。`, '作废', async () => {
         try {
           await api(`/api/admin/invites/${encodeURIComponent(code)}/revoke`, { method: 'POST' });
           toast(`已作废 ${code}`);
@@ -575,13 +587,13 @@
     btn.textContent = '生成中…';
     try {
       const data = await api('/api/admin/invites', { method: 'POST', body: JSON.stringify({ count }) });
-      toast(`已生成 ${data.created.length} 个链接`);
+      toast(`已生成 ${data.created.length} 个登录码`);
       loadInvites();
     } catch (err) {
       toast(err.message || '生成失败', true);
     } finally {
       btn.disabled = false;
-      btn.textContent = '生成链接';
+      btn.textContent = '生成登录码';
     }
   });
 
@@ -590,57 +602,113 @@
   $('btn-copy-all').addEventListener('click', async () => {
     try {
       const data = await api('/api/admin/invites');
-      const usable = data.invites.filter((i) => i.status !== 'revoked');
-      if (!usable.length) return toast('还没有可用的链接', true);
-      const text = usable.map((i) => `${i.code}\t${location.origin}/v/${i.code}`).join('\n');
+      const usable = data.invites.filter((i) => !i.revoked);
+      if (!usable.length) return toast('还没有可用的登录码', true);
+      // 每行一个码，方便逐个粘给评委
+      const text = usable.map((i) => i.code).join('\n');
       const ok = await copyText(text);
-      toast(ok ? `已复制 ${usable.length} 条链接` : '复制失败', !ok);
+      toast(ok ? `已复制 ${usable.length} 个登录码` : '复制失败', !ok);
     } catch (err) {
       toast(err.message || '复制失败', true);
     }
   });
 
-  /* -------------------------------- 进度 -------------------------------- */
+  /* ------------------------------ 场次控制 ------------------------------ */
 
-  async function loadProgress() {
+  async function loadRounds() {
     try {
-      const data = await api('/api/admin/progress');
-      renderProgress(data);
+      const data = await api('/api/admin/rounds');
+      state.rounds = data;
+      state.started = data.rounds.length > 0;
+      renderRounds(data);
     } catch (err) {
       if (!(err instanceof ApiError && err.status === 401)) toast(err.message || '加载失败', true);
     }
   }
 
   let lastPhase = null;
+  let lastRoundsSig = '';
 
-  function renderProgress(data) {
-    const { counts, total } = data;
-    const pct = total ? Math.round((counts.submitted / total) * 100) : 0;
+  function renderRounds(data) {
+    const judgeCount = data.judgeCount;
+    const live = data.live;
 
-    $('progress-submitted').textContent = counts.submitted;
-    $('progress-total').textContent = total;
-    $('progress-hero-fill').style.width = pct + '%';
+    // ⚠️ 数据没变就**不要**重建 DOM。
+    //    这个页面每 20 秒自动刷新一次，无条件重建会：
+    //      · 把主持人正在选的「跳到指定演讲者」下拉框重置回第一项
+    //      · 把正要点的「重开」按钮从手指底下换掉（点击落在被替换掉的节点上就丢了）
+    const sig = JSON.stringify([
+      data.live,
+      data.rounds,
+      data.judgeCount,
+      data.anomalies,
+      data.codes,
+      data.unstartedContestants,
+      data.phase,
+      (state.configDraft.contestants || []).map((c) => [c.id, c.name]),
+    ]);
+    if (sig === lastRoundsSig) return;
+    lastRoundsSig = sig;
 
-    const cards = [
-      { key: 'issued', label: '已签发未打开', desc: '刚领到、还没进打分页' },
-      { key: 'opened', label: '已领取未提交', desc: '扫了码但没交卷' },
-      { key: 'submitted', label: '已提交', desc: '选票已入库' },
-      { key: 'revoked', label: '已作废', desc: '已失效的链接' },
-    ];
-    $('progress-stats').innerHTML = cards
-      .map(
-        (c) => `
-        <div class="stat-card ${STATUS_CLASS[c.key]}">
-          <div class="stat-card-num">${counts[c.key] ?? 0}</div>
-          <div class="stat-card-label">${esc(c.label)}</div>
-          <div class="stat-card-desc">${esc(c.desc)}</div>
-        </div>`
-      )
+    // ---- 顶部控制条：主持人盯着这一块决定什么时候切下一位 ----
+    $('live-name').textContent = live ? `第 ${live.seq} 场 · ${live.name}` : '尚未开始';
+    $('live-count').textContent = live
+      ? `已收 ${live.submitted} / ${judgeCount} 位评委`
+      : `共 ${data.rounds.length} 场已结束 · 应到 ${judgeCount} 位评委`;
+
+    // 全部演讲者都上过场之后，advance 会返回 no_more_rounds —— 提前禁用并说明
+    const advanceBtn = $('btn-advance');
+    const exhausted = data.unstartedContestants === 0;
+    advanceBtn.disabled = exhausted;
+    advanceBtn.textContent = exhausted ? '名单已跑完' : live ? '开始下一位 ▶' : '开始第一位 ▶';
+
+    // ---- 异常告警 ----
+    const box = $('rounds-anomaly');
+    box.hidden = data.anomalies.length === 0;
+    if (data.anomalies.length) {
+      $('rounds-anomaly-text').textContent =
+        data.anomalies.join(' ') +
+        ' 这通常意味着有人清掉浏览器缓存后又领到了新的登录码 —— 请当场核对。';
+    }
+
+    // ---- 跳到指定演讲者（应对临时调序 / 中途补位）----
+    const opts = (state.configDraft.contestants || [])
+      .map((c) => `<option value="${c.id}">${esc(c.seq + '. ' + c.name)}</option>`)
       .join('');
+    $('jump-contestant').innerHTML = opts || '<option value="">名单为空</option>';
+    $('btn-jump').disabled = !opts;
 
-    const chase = data.codes.opened || [];
-    $('chase-box').hidden = chase.length === 0;
-    $('chase-chips').innerHTML = chase.map((c) => `<span class="code-chip">${esc(c)}</span>`).join('');
+    // ---- 登录码概况 ----
+    $('codes-summary').textContent =
+      `登录码 ${data.codes.total} 个（可用 ${data.codes.active}，已作废 ${data.codes.revoked}）`;
+
+    // ---- 场次列表（倒序，最近的在上）----
+    const tbody = document.querySelector('#round-table tbody');
+    if (!data.rounds.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="5">还没有开始任何一场</td></tr>';
+    } else {
+      tbody.innerHTML = data.rounds
+        .slice()
+        .reverse()
+        .map((r) => {
+          const flags = [];
+          if (r.over) flags.push('<b class="flag-danger">超员</b>');
+          if (r.thin) flags.push('<span class="flag-warn">薄数据</span>');
+          const reop =
+            r.status === 'live'
+              ? ''
+              : `<button type="button" class="btn btn-sm" data-action="reopen" data-id="${r.roundId}" data-name="${esc(r.name)}">重开</button>`;
+          return `
+            <tr>
+              <td class="col-seq">${r.seq}</td>
+              <td><b>${esc(r.name)}</b> ${flags.join(' ')}</td>
+              <td>${r.status === 'live' ? '<b class="flag-live">进行中</b>' : '已结束'}</td>
+              <td class="num-cell">${r.submitted} / ${judgeCount}</td>
+              <td class="col-op">${reop}</td>
+            </tr>`;
+        })
+        .join('');
+    }
 
     applyPhase(data.phase);
     lastPhase = data.phase;
@@ -654,7 +722,101 @@
     $('btn-phase').textContent = isOpen ? '封盘' : '重新开放';
   }
 
-  $('btn-refresh-progress').addEventListener('click', loadProgress);
+  $('btn-refresh-rounds').addEventListener('click', loadRounds);
+
+  $('btn-advance').addEventListener('click', () => {
+    const live = state.rounds && state.rounds.live;
+    const name = live ? live.name : null;
+
+    confirmModal(
+      live ? '切到下一位' : '开始第一位',
+      live
+        ? `确定结束「${name}」这一场吗？还没提交的评委将记为弃权 —— 之后他们的评分不再计入这一场。`
+        : '确定开始第一位演讲者的评分吗？所有已登录的评委会立即看到打分页。',
+      live ? '开始下一位' : '开始',
+      async () => {
+        try {
+          const data = await api('/api/admin/rounds/advance', {
+            method: 'POST',
+            body: JSON.stringify({}),
+          });
+          toast(`已开始第 ${data.round.seq} 场：${data.round.name}`);
+          loadRounds();
+        } catch (err) {
+          toast(err.message || '切换失败', true);
+        }
+      }
+    );
+  });
+
+  $('btn-jump').addEventListener('click', () => {
+    const sel = $('jump-contestant');
+    const contestantId = Number(sel.value);
+    if (!contestantId) return toast('请先选择一位演讲者', true);
+    const label = sel.options[sel.selectedIndex].textContent;
+
+    confirmModal(
+      '跳到指定演讲者',
+      `确定直接开始「${label}」这一场吗？当前进行中的场次会立即结束，未提交的评委记为弃权。`,
+      '开始这一位',
+      async () => {
+        try {
+          const data = await api('/api/admin/rounds/advance', {
+            method: 'POST',
+            body: JSON.stringify({ contestantId }),
+          });
+          toast(`已开始第 ${data.round.seq} 场：${data.round.name}`);
+          loadRounds();
+        } catch (err) {
+          toast(err.message || '切换失败', true);
+        }
+      }
+    );
+  });
+
+  document.querySelector('#round-table').addEventListener('click', (event) => {
+    const btn = event.target.closest('[data-action="reopen"]');
+    if (!btn) return;
+    const id = Number(btn.dataset.id);
+    const name = btn.dataset.name;
+
+    confirmModal(
+      '重开这一场',
+      `确定重开「${name}」吗？会为他/她新开一场重新打分，` +
+        '**原场次不再计分**，已经交过的评委需要重新打一次。',
+      '重开',
+      async () => {
+        try {
+          const data = await api(`/api/admin/rounds/${id}/reopen`, { method: 'POST', body: JSON.stringify({}) });
+          toast(data.message || '已重开');
+          loadRounds();
+        } catch (err) {
+          toast(err.message || '重开失败', true);
+        }
+      }
+    );
+  });
+
+  $('btn-reset').addEventListener('click', () => {
+    confirmModal(
+      '清空演练数据',
+      '会删掉**所有场次和选票**，用于彩排后重新开始。演讲者名单、评分维度、登录码都会保留，' +
+        '登录码不会失效。此操作不可撤销。',
+      '确认清空',
+      async () => {
+        try {
+          const data = await api('/api/admin/reset', {
+            method: 'POST',
+            body: JSON.stringify({ confirm: 'RESET' }),
+          });
+          toast(data.message || '已清空');
+          loadRounds();
+        } catch (err) {
+          toast(err.message || '清空失败', true);
+        }
+      }
+    );
+  });
 
   $('btn-phase').addEventListener('click', () => {
     if (lastPhase === 'open') {
@@ -715,17 +877,19 @@
   function renderResults(data) {
     const dims = data.dimensions;
     const rows = data.rows;
+    const scored = rows.filter((r) => !r.blank);
+    const totalBallots = rows.reduce((s, r) => s + r.n, 0);
 
     // 横幅（PLAN §7.4 强制项）
     const banner = $('result-banner');
     if (data.phase === 'open') {
       banner.className = 'result-banner is-live';
       banner.textContent =
-        `⚠️ 投票进行中（已提交 ${data.n} 张）— 请勿对外透露任何分数。` +
-        '评审群里一句「目前第一是……」就会污染剩余选票，让排名向先投者收敛。';
+        `⚠️ 比赛进行中（已收 ${totalBallots} 份评分）— 请勿对外透露任何分数。` +
+        '评审群里一句「目前第一是……」就会污染后面的场次，让排名向先上场的人收敛。';
     } else {
       banner.className = 'result-banner is-closed';
-      banner.textContent = `✅ 投票已结束（有效选票 ${data.n} 张）— 结果可以公布了。`;
+      banner.textContent = `✅ 投票已结束（共 ${totalBallots} 份评分）— 结果可以公布了。`;
     }
 
     // 一致性告警
@@ -741,36 +905,59 @@
       return;
     }
 
-    // 一律去一高一低。k = N-2，N≤2 时已经没有剩余分数可平均了，如实说明而不是显示负数
-    const trimText =
-      data.k >= 1
-        ? `每维度去掉一个最高分和一个最低分后，以 <b>${data.k}</b> 张计平均`
-        : `每维度去掉一个最高分和一个最低分后<b>已无剩余分数</b>（有效票数 ${data.n} 张，需至少 3 张才能计分）`;
+    // 计分口径说明。票数不齐是常态，必须把「薄数据」这件事摆在最显眼处（PLAN §5.3）
+    const thinList = rows.filter((r) => r.thin);
+    const sup = data.superseded || [];
     $('result-meta').innerHTML =
-      `有效选票 <b>${data.n}</b> 张 · ${trimText} · 总分区间 1.00–5.00`;
+      `共 <b>${rows.length}</b> 场 · 有效评分 <b>${totalBallots}</b> 份 · ` +
+      '每个维度按<b>实际收到的票数</b>处理：≥3 票去一高一低，2 票直接平均，1 票照用并标注 · 总分区间 1.00–5.00' +
+      (thinList.length
+        ? `<br /><span class="flag-warn">⚠️ 第 ${thinList.map((r) => r.seq).join('、')} 场票数不超过 2 张，结论不可靠</span>` +
+          ' —— 票数越少，「去一高一低」的保护越弱；某场只有 1 票时，那一场等于由一位评委决定。'
+        : '') +
+      (sup.length
+        ? `<br /><span class="hint">已作废（被重开顶掉）：第 ${sup.map((s) => s.seq).join('、')} 场，不计入排名。</span>`
+        : '');
 
     // 名次表
     const thead = $('rank-table').querySelector('thead');
     thead.innerHTML =
       '<tr>' +
       '<th class="col-rank">名次</th>' +
-      '<th>参赛者</th>' +
+      '<th>演讲者</th>' +
       '<th>项目</th>' +
       dims.map((d) => `<th class="num-cell">${esc(d.name)}<br /><span style="font-weight:400">${esc(d.weight)}%</span></th>`).join('') +
       '<th class="num-cell">加权总分</th>' +
+      '<th class="num-cell">本场票数</th>' +
       '</tr>';
 
     const tbody = $('rank-table').querySelector('tbody');
     tbody.innerHTML = rows
       .map((r) => {
-        const tied = rows.filter((o) => o.u === r.u).length > 1;
+        const tied = !r.blank && scored.filter((o) => o.u === r.u).length > 1;
+        const rankCell = r.blank
+          ? '<span class="rank-badge">—</span>'
+          : `<span class="rank-badge ${tied ? 'is-tie' : r.rank === 1 ? 'is-top' : ''}">${r.rank}</span>`;
+
+        const marginCells = dims
+          .map((d) => {
+            const info = r.details[d.id] || {};
+            const mark = info.single
+              ? ' <span class="flag-warn" title="这一维度只收到 1 票，等于由一位评委决定">仅1票</span>'
+              : '';
+            const v = r.margins[d.id];
+            return `<td class="num-cell">${v === null || v === undefined ? '—' : fmt2(v)}${mark}</td>`;
+          })
+          .join('');
+
         return `
-          <tr data-contestant-id="${r.contestantId}">
-            <td class="col-rank"><span class="rank-badge ${tied ? 'is-tie' : r.rank === 1 ? 'is-top' : ''}">${r.rank}</span></td>
-            <td>${esc(r.name)}</td>
+          <tr${r.blank ? ' style="opacity:.55"' : ''}>
+            <td class="col-rank">${rankCell}</td>
+            <td>${esc(r.name)}${r.thin ? ' <span class="flag-warn">薄数据</span>' : ''}</td>
             <td>${esc(r.project)}</td>
-            ${dims.map((d) => `<td class="num-cell">${fmt2(r.margins[d.id])}</td>`).join('')}
-            <td class="total-cell">${fmt2(r.total)}</td>
+            ${marginCells}
+            <td class="total-cell">${r.blank ? '—' : fmt2(r.total)}</td>
+            <td class="num-cell">${r.n}${r.submitted !== r.n ? ' ⚠️' : ''}</td>
           </tr>`;
       })
       .join('');
@@ -796,12 +983,13 @@
       contestants: config.contestants.map((c) => ({ ...c })),
       dimensions: config.dimensions.map((d) => ({ ...d })),
     };
-    state.submittedCount = config.submittedCount;
+    state.started = config.started;
     $('brand-activity').textContent = config.activityName || '管理后台';
     applyPhase(config.phase);
     lastPhase = config.phase;
     renderConfig();
-    switchTab('config');
+    // 默认落在「场次」页 —— 比赛当天主持人的全部操作都在这一页
+    switchTab('rounds');
   }
 
   (async () => {

@@ -5,7 +5,7 @@ const express = require('express');
 
 const { ensureSeed, printSeedReport } = require('./seed');
 const { DB_PATH } = require('./db');
-const { listLanInterfaces } = require('./net');
+const { entryUrls } = require('./net');
 const voteRoutes = require('./routes/vote');
 const adminRoutes = require('./routes/admin');
 
@@ -46,32 +46,42 @@ app.use((err, req, res, next) => {
 const result = ensureSeed();
 
 const server = app.listen(PORT, HOST, () => {
-  const ifaces = listLanInterfaces();
+  const urls = entryUrls(PORT);
+  const configured = urls.filter((u) => u.configured);
+  const ifaces = urls.filter((u) => !u.configured);
+
   console.log('');
   console.log('  ════════════════════════════════════════════════');
-  console.log('   评委匿名打分系统已启动');
+  console.log('   演讲比赛匿名打分系统已启动');
   console.log('  ════════════════════════════════════════════════');
   console.log('');
   console.log('   管理后台（本机）：http://localhost:' + PORT + '/admin');
-  if (ifaces.length) {
+  console.log('');
+
+  if (configured.length) {
+    console.log('   ✅ 评委入口（公网地址，二维码与后台都指向它）：');
+    console.log('      ' + configured[0].url);
     console.log('');
-    console.log('   评委扫码入口（后台会自动为下面第一个地址生成二维码）：');
+    if (ifaces.length) {
+      console.log('   本机网卡地址（仅供核对，不要发给评委）：');
+      ifaces.forEach((i) => console.log(`      ${i.url}   (${i.name})`));
+      console.log('');
+    }
+  } else if (ifaces.length) {
+    console.log('   ⚠️ 没有设置 PFXT_PUBLIC_URL —— 下面是本机探测到的地址：');
     ifaces.forEach((i, idx) => {
       const tag = (idx === 0 ? ' ← 默认' : '') + (i.virtual ? '  [虚拟网卡，手机多半连不上]' : '');
-      console.log(`     http://${i.ip}:${PORT}/v   (${i.name})${tag}`);
+      console.log(`      ${i.url}   (${i.name})${tag}`);
     });
     console.log('');
-    console.log('   后台「投票链接」页可以直接显示并打印这个二维码。');
+    console.log('   ⚠️ 部署到云服务器时**必须**设置 PFXT_PUBLIC_URL，否则 os.networkInterfaces()');
+    console.log('      只会返回内网 IP（10.x），二维码会指向评委根本连不上的地址：');
+    console.log('         PFXT_PUBLIC_URL=http://<公网IP>:' + PORT);
     console.log('');
-    console.log('   本机局域网 IP：' + ifaces.map((i) => i.ip).join('、'));
-    if (ifaces.length > 1) {
-      console.log('   有多个地址时，请在后台选一个评委手机能访问到的。');
-    }
   } else {
+    console.log('   ⚠️ 没有检测到任何可用地址，手机可能访问不到。');
     console.log('');
-    console.log('   ⚠️ 没有检测到局域网 IPv4 地址，手机可能访问不到。');
   }
-  console.log('');
   console.log('   数据库：' + DB_PATH);
   console.log('');
   console.log('   按 Ctrl+C 停止服务。');

@@ -90,15 +90,50 @@ function lanAddresses() {
   return listLanInterfaces().map((i) => i.ip);
 }
 
-/** 评委二维码的可选地址。二维码必须用局域网 IP，不能用 location.origin ——
- *  管理员多半是在 localhost 上打开后台的。 */
-function entryUrls(port) {
-  return listLanInterfaces().map((i) => ({
-    ip: i.ip,
-    name: i.name,
-    virtual: i.virtual,
-    url: `http://${i.ip}:${port}${ENTRY_PATH}`,
-  }));
+/** 从 URL 里取出主机名（去掉协议与端口）；解析不了就原样返回，别让配置问题炸掉启动 */
+function hostOf(url) {
+  try {
+    return new URL(url).hostname || url;
+  } catch {
+    return url;
+  }
 }
 
-module.exports = { lanAddresses, listLanInterfaces, entryUrls, ENTRY_PATH };
+/**
+ * 评委入口的可选地址。**不能用 location.origin** —— 管理员多半是在
+ * localhost 或内网地址上打开后台的。
+ *
+ * ⚠️ 部署到云服务器后，`os.networkInterfaces()` 只会返回内网 IP（10.x），
+ * 拼出来的 `http://10.x.x.x:3000/v` 评委根本连不上。所以允许用环境变量
+ * **PFXT_PUBLIC_URL** 显式指定公网地址，它优先返回，局域网地址排在后面
+ * 供本机调试时核对（PLAN §4）。
+ */
+function entryUrls(port) {
+  const out = [];
+
+  const configured = String(process.env.PFXT_PUBLIC_URL || '').trim().replace(/\/+$/, '');
+  if (configured) {
+    const base = /^https?:\/\//i.test(configured) ? configured : `http://${configured}`;
+    out.push({
+      ip: hostOf(base),
+      name: '公网地址（PFXT_PUBLIC_URL）',
+      virtual: false,
+      configured: true,
+      url: base + ENTRY_PATH,
+    });
+  }
+
+  for (const i of listLanInterfaces()) {
+    out.push({
+      ip: i.ip,
+      name: i.name,
+      virtual: i.virtual,
+      configured: false,
+      url: `http://${i.ip}:${port}${ENTRY_PATH}`,
+    });
+  }
+
+  return out;
+}
+
+module.exports = { lanAddresses, listLanInterfaces, entryUrls, hostOf, ENTRY_PATH };
