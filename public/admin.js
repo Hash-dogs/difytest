@@ -1091,9 +1091,22 @@
           .map(({ judge: j, byRound }) => {
             const cell = byRound.get(r.roundId);
 
+            // 这一行的加权总分如果是被「去掉一高一低」去掉的那两个之一，
+            // 服务端会在 cell 上标出 trimmedAs（见 markTrimmedJudges）。
+            // ⚠️ 标签挂在**登录码右侧**，但要放在「已作废」之前 —— 作废是码本身的状态，
+            //    去分是这个码在这**一场**里的处境，读起来先人后事。
+            const trimmedAs = cell && cell.trimmedAs;
+            const trimTag = trimmedAs
+              ? `<span class="dt-trim-tag"${
+                  cell.trimTied
+                    ? ' title="这一场有另一位评委的总分与它相同，去掉其中任何一位，结果都一样"'
+                    : ''
+                }>（${trimmedAs === 'high' ? '最高分' : '最低分'}）</span>`
+              : '';
+
             // 登录码列只留码本身。原来还挂一行「已评 N 位」，在整宽表里每一个码下面
             // 都重复一遍，属于噪音；弃权与否看「—」就行
-            let tds = `<td class="dt-code">${esc(j.code)}${
+            let tds = `<td class="dt-code">${esc(j.code)}${trimTag}${
               j.revoked ? ' <span class="flag-warn">已作废</span>' : ''
             }</td>`;
             dims.forEach((d) => {
@@ -1108,7 +1121,8 @@
                 ? `<td class="dt-sub">${fmt2(cell.total)}</td>`
                 : '<td class="dt-sub dt-miss">—</td>';
 
-            return `<tr>${tds}</tr>`;
+            // 被去掉的那一行整行画一条浅浅的横线，见 admin.css 的 .is-trimmed
+            return `<tr${trimmedAs ? ' class="is-trimmed"' : ''}>${tds}</tr>`;
           })
           .join('');
 

@@ -983,6 +983,44 @@
   color: var(--text-faint);
 }
 
+/* ---- 被「去一高一低」去掉的那两行 ---- */
+
+/* 整行画一条浅浅的横线。
+   ⚠️ 刻意**不用** `text-decoration: line-through`：这一行右侧挂着「（最高分）」，
+   那正是解释「为什么划掉」的注解，划线会连同它一起糊掉。改成在每个 td 的**背景**上
+   画一条 1px 的线，横跨整行（含登录码格），而所有文字保持可读。
+   只设 background-image，没碰 background-color —— 窄屏下登录码列的底色与
+   `.grid tbody tr:hover` 的高亮都还在。 */
+.detail-table tr.is-trimmed td {
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--text) 30%, transparent),
+    color-mix(in srgb, var(--text) 30%, transparent)
+  );
+  background-size: 100% 1px;
+  background-position: 0 50%;
+  background-repeat: no-repeat;
+}
+
+/* 分值压暗，一眼看出这两行没参与计分。
+   ⚠️ 登录码那一格**不压暗** —— 压暗了反而看不清是谁被去掉的，
+   而「谁被去掉」正是这一页要回答的事。 */
+.detail-table tr.is-trimmed td.dt-cell,
+.detail-table tr.is-trimmed td.dt-sub {
+  color: var(--text-faint);
+}
+
+/* 「（最高分）/（最低分）」：挂在登录码右侧，紧挨着码。
+   ⚠️ 码是等宽字体，标签要换回正文字体，否则中文括号会被撑得很开、看着像乱码 */
+.detail-table .dt-trim-tag {
+  margin-left: 6px;
+  font-family: var(--font);
+  font-size: 11.5px;
+  font-weight: 600;
+  /* 比压暗后的分值亮一档，读起来是「对这条删除线的注解」而不是待忽略的内容 */
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
 /* 窄屏：表被压到 min-width 以下，横向滚起来了 —— 这时候登录码列必须钉住，
    而且**必须有底色**（否则滑动时数字会从码底下面穿过去）。
    断点取 860px：.main 左右各 20px 内边距，视口再窄容器就装不下 760px 的表了。 */

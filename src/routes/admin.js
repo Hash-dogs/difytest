@@ -556,7 +556,15 @@ function computeCurrentResults() {
       ballots: row.n,
     }));
 
-  return { config, all, supersededIds, submittedByRound, result, mismatches, judgeDetail: buildJudgeDetail(config.dimensions) };
+  return {
+    config,
+    all,
+    supersededIds,
+    submittedByRound,
+    result,
+    mismatches,
+    judgeDetail: buildJudgeDetail(config.dimensions, result.rounds),
+  };
 }
 
 /**
@@ -568,7 +576,7 @@ function computeCurrentResults() {
  * 名单取自 invite 表而不是选票，这样**一次都没交过的码也会出现在表里**——
  * 否则「谁弃权了」反而看不出来。已作废的码也保留，带 revoked 标记。
  */
-function buildJudgeDetail(dimensionList) {
+function buildJudgeDetail(dimensionList, resultRows) {
   const scoreRows = db
     .prepare(
       `SELECT b.code AS code, s.round_id AS round_id,
@@ -587,7 +595,7 @@ function buildJudgeDetail(dimensionList) {
     cell[r.dimension_id] = r.value;
   }
 
-  return listInvites.all().map((inv) => {
+  const judges = listInvites.all().map((inv) => {
     const perRound = byCode.get(inv.code) || new Map();
     const roundsOut = [...perRound.entries()]
       .map(([roundId, scores]) => {
@@ -613,6 +621,61 @@ function buildJudgeDetail(dimensionList) {
       rounds: roundsOut,
     };
   });
+
+  markTrimmedJudges(judges, resultRows);
+  return judges;
+}
+
+/**
+ * 给每一场里**被去掉的那两位评委**打上标记，供明细页把整行划掉。
+ *
+ * ⚠️ 为什么要在这一层反查，而不是让 scoring.js 直接给出身份：
+ *    `scoring.js` 的去分作用在**一列数值**上（`sorted.slice(1, -1)`），
+ *    那一层里压根没有「评委」这个概念 —— 它只需要知道去掉一个最小的、一个最大的。
+ *    给它塞进身份会改变它的输入模型，而那是整数排名确定性的核心，不值得为显示动它。
+ *    所以身份在这里由总分反查回来。
+ *
+ * 反查成立的前提（两边必须同源，改动任一处都要回来核对）：
+ *   - 两边算的都是 Σ(权重 × 分值)，且都**只算完整票**（残缺票两边都排除）
+ *   - 这里的 `total` 是 `weighted / 100`，乘回 100 取整即还原 scoring 里的那个整数
+ *
+ * ⚠️ 票数 ≤2 时**不去分**（`trim.trimmed === false`）。此时 `removedLow/High`
+ *    只是首尾本身、并不代表「被去掉」（见 scoring.js 同名注释）。必须按 `trimmed`
+ *    判断，否则会给这些场次的首尾两行平白画上删除线。
+ *
+ * ⚠️ 边界同分时（最低分或最高分不止一位）去谁**结果完全一样**（留下的多重集不变），
+ *    但「哪一行被划掉」在数值上无法唯一确定。这里按登录码定序取一位，保证每次刷新
+ *    划的是同一行，并给 cell 打上 `trimTied` 让页面能说明这一点。
+ */
+function markTrimmedJudges(judges, resultRows) {
+  const byRound = new Map(); // roundId -> [{ cell, code, weighted }]
+  for (const j of judges) {
+    for (const cell of j.rounds) {
+      if (cell.total === null || cell.total === undefined) continue; // 残缺票不参与去分
+      let arr = byRound.get(cell.roundId);
+      if (!arr) byRound.set(cell.roundId, (arr = []));
+      arr.push({ cell, code: j.code, weighted: Math.round(cell.total * 100) });
+    }
+  }
+
+  for (const row of resultRows || []) {
+    const trim = row.trim;
+    if (!trim || !trim.trimmed) continue; // 没去分的场次不标
+
+    const arr = byRound.get(row.roundId);
+    // 去分的前提是 ≥3 票；这里不足 3 位说明与 scoring 的判定对不上，宁可不标
+    if (!arr || arr.length < 3) continue;
+
+    // 升序；同分用登录码定序，保证同一份数据每次刷新划的是同一行
+    arr.sort((a, b) => a.weighted - b.weighted || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
+
+    const low = arr[0];
+    const high = arr[arr.length - 1];
+    low.cell.trimmedAs = 'low';
+    high.cell.trimmedAs = 'high';
+    low.cell.trimTied = arr[1].weighted === low.weighted;
+    high.cell.trimTied = arr[arr.length - 2].weighted === high.weighted;
+  }
 }
 
 router.get('/api/admin/results', requireAdmin, (req, res) => {
