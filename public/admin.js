@@ -876,10 +876,16 @@
     }
   }
 
-  /** 奖级 → 徽章配色 class */
-  function tierClass(r) {
-    if (r.blank || r.awardPending) return '';
-    return { 一等奖: 'is-gold', 二等奖: 'is-silver', 三等奖: 'is-bronze' }[r.award] || '';
+  /**
+   * 名次 → 徽章配色 class：前三名给金 / 银 / 铜。
+   *
+   * ⚠️ 这是**名次**配色，不是奖级 —— 奖级已从结果页撤掉。两者边界并不重合
+   * （一等奖 2 名、二等奖 3 名，而这里是前三名），所以别再按奖级想这件事。
+   * 颜色变量仍叫 --gold / --silver / --bronze，见 common.css。
+   */
+  function medalClass(r) {
+    if (r.blank || r.needsVote) return '';
+    return { 1: 'is-gold', 2: 'is-silver', 3: 'is-bronze' }[r.rank] || '';
   }
 
   /**
@@ -902,11 +908,11 @@
     const totalBallots = rows.reduce((s, r) => s + r.n, 0);
 
     // 横幅：只陈述当前状态，不再展开说明为什么不能提前公布。
-    // 比赛没结束时奖级只是**暂定** —— 后面还有作品上场，名次随时会变，得说清楚。
+    // 比赛没结束时名次只是**暂定** —— 后面还有作品上场，名次随时会变，得说清楚。
     const banner = $('result-banner');
     if (data.phase === 'open') {
       banner.className = 'result-banner is-live';
-      banner.textContent = `比赛进行中（已收 ${totalBallots} 份评分）· 名次与奖级为暂定`;
+      banner.textContent = `比赛进行中（已收 ${totalBallots} 份评分）· 名次为暂定`;
     } else {
       banner.className = 'result-banner is-closed';
       banner.textContent = `投票已结束（共 ${totalBallots} 份评分）`;
@@ -925,12 +931,13 @@
       return;
     }
 
-    // 概要行：只呈现当前结果本身，不讲解计分规则（规则见 Excel 的「计分说明」页）
+    // 概要行：只呈现当前结果本身，不讲解计分规则（规则见 Excel 的「计分说明」页）。
+    // ⚠️ 不再重复「有效评分 N 份」—— 份数已经在上面那条横幅里了，同一屏说两遍只是噪声。
     const thinList = rows.filter((r) => r.thin);
     const voteList = rows.filter((r) => r.needsVote);
     const sup = data.superseded || [];
     $('result-meta').innerHTML =
-      `共 <b>${rows.length}</b> 位 · 有效评分 <b>${totalBallots}</b> 份` +
+      `共 <b>${rows.length}</b> 位` +
       (thinList.length
         ? ` · <span class="flag-warn">⚠️ 第 ${thinList.map((r) => r.seq).join('、')} 位票数不超过 2 张，结论不可靠</span>`
         : '') +
@@ -943,26 +950,25 @@
 
     // 名次表
     //
-    // ⚠️ 这里**不再列五个维度各自的均分**：现场公布时要让人一眼看到名次，
-    //    维度明细在「明细」页和 Excel 的「维度明细」工作表里，各归各位。
+    // ⚠️ 只留**名次 + 演讲者 + 项目 + 加权总分**。不列五个维度各自的均分（会淹没名次），
+    //    也不列奖级和票数 —— 现场公布要的是一眼看懂谁第几，其余都在「明细」页和 Excel 里。
+    //    奖级仍然照《评选方案》算，只是不在这一页显示；Excel 的「汇总」工作表里还有。
     const thead = $('rank-table').querySelector('thead');
     thead.innerHTML =
       '<tr>' +
       '<th class="col-rank">名次</th>' +
-      '<th class="col-award">奖级</th>' +
-      '<th>演讲者</th>' +
+      '<th class="name-cell">演讲者</th>' +
       '<th>项目</th>' +
       '<th class="num-cell">加权总分</th>' +
-      '<th class="num-cell">票数</th>' +
       '</tr>';
 
     const tbody = $('rank-table').querySelector('tbody');
     tbody.innerHTML = rows
       .map((r) => {
-        const tier = tierClass(r);
+        const medal = medalClass(r);
 
-        // 名次徽章：并列待投票的单独着色，其余按奖级着色（金/银/铜）
-        const badge = ['rank-badge', r.blank ? '' : 'is-big', r.needsVote ? 'is-vote' : '', tier]
+        // 名次徽章：并列待投票的单独着色，其余前三名按金/银/铜着色
+        const badge = ['rank-badge', r.blank ? '' : 'is-big', r.needsVote ? 'is-vote' : '', medal]
           .filter(Boolean)
           .join(' ');
         const rankCell = r.blank ? '<span class="rank-badge">—</span>' : `<span class="${badge}">${r.rank}</span>`;
@@ -982,12 +988,6 @@
           );
         }
 
-        const awardCell = r.blank
-          ? '—'
-          : r.awardPending
-            ? `<span class="award-pending">${esc(r.awardPending)}</span>`
-            : `<span class="award ${tier}">${esc(r.award)}</span>`;
-
         // 同分被顺位分开了：把「凭什么他排前面」写在分数旁边。
         // 最终得分取整到 2 位小数之后同分是常态，不说清楚现场会以为排错了。
         const note = tieNote(r, data);
@@ -998,11 +998,9 @@
         return `
           <tr${r.blank ? ' style="opacity:.55"' : ''}>
             <td class="col-rank">${rankCell}</td>
-            <td class="col-award">${awardCell}</td>
-            <td>${esc(r.name)}${flags.length ? ' ' + flags.join(' ') : ''}</td>
-            <td>${esc(r.project)}</td>
+            <td class="name-cell">${esc(r.name)}${flags.length ? ' ' + flags.join(' ') : ''}</td>
+            <td class="project-cell">${esc(r.project)}</td>
             <td class="total-cell">${scoreCell}</td>
-            <td class="num-cell">${r.n}${r.submitted !== r.n ? ' ⚠️' : ''}</td>
           </tr>`;
       })
       .join('');

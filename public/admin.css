@@ -581,16 +581,55 @@
   font-family: var(--mono);
 }
 
+/* -------- 名次表：只留 名次 / 演讲者 / 项目 / 加权总分，靠版式撑住 --------
+   列少了，一屏就那么几行，所以行高、留白、名次徽章都放大 —— 现场多半是投影，
+   远看要一眼读得出「谁第几」。改动集中在 .rank-table 里，不动 .grid 的通用规则。 */
+
 .rank-table th.col-rank,
 .rank-table td.col-rank {
-  width: 76px;
+  width: 92px;
   text-align: center;
 }
 
-.rank-table th.col-award,
-.rank-table td.col-award {
-  width: 108px;
-  white-space: nowrap;
+/* 行高：内容少，越舒展越好看。表头也跟着抬，否则头重脚轻 */
+.rank-table th {
+  padding: 13px 18px;
+}
+
+.rank-table td {
+  padding: 15px 18px;
+}
+
+/* 斑马纹。⚠️ 不要用 --surface-2（#f8fafc）—— 它离 --surface（#fff）只差 2%，
+   投影上完全看不出来，等于白写。这里按 --text 兑 4%，亮暗主题各自成立。 */
+.rank-table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--text) 4%, var(--surface));
+}
+
+/* ⚠️ 这条不能省，也不能只靠 `.grid tbody tr:hover`：那条把底色刷在 **tr** 上，
+   而斑马纹刷在 **td** 上，td 盖在 tr 上面 —— 有斑马纹的行 hover 会毫无反应。
+   所以 hover 必须在 td 这一层重新声明一次。特异度与斑马纹相同 (0,2,3)，
+   后写者胜，正好压过。 */
+.rank-table tbody tr:hover td {
+  background: var(--accent-soft);
+}
+
+/* 姓名列钉死宽度：只剩四列时表格会自动把富余宽度塞给「项目」，
+   于是姓名右侧空出一大片，项目反而挤在中间。钉住这一列，让项目去吃掉富余。
+   ⚠️ 挂在 th / td 共用的 .name-cell 上（同 .col-rank 的写法），不要用 :nth-child ——
+   日后插一列，nth-child 会不声不响地套到别的列头上。 */
+.rank-table .name-cell {
+  width: 240px;
+}
+
+.rank-table td.name-cell {
+  font-size: 15.5px;
+  font-weight: 700;
+}
+
+.rank-table td.project-cell {
+  color: var(--text-dim);
+  font-size: 14px;
 }
 
 .rank-badge {
@@ -607,15 +646,15 @@
   color: var(--text-dim);
 }
 
-/* 名次是要「突出」的东西：放大、按奖级着色。
+/* 名次是要「突出」的东西：放大、前三名按金/银/铜着色。
    min-width 与 height 必须一起放，否则 border-radius:50% 会把两位数压成椭圆。
-   三档颜色走 common.css 里的奖级变量（亮/暗主题各有一套）。 */
+   ⚠️ 这是**名次**配色，不是奖级（见 common.css 的同名说明）。 */
 .rank-badge.is-big {
-  min-width: 32px;
-  height: 32px;
-  font-size: 16px;
+  min-width: 40px;
+  height: 40px;
+  font-size: 19px;
   font-weight: 800;
-  padding: 0 9px;
+  padding: 0 11px;
 }
 
 .rank-badge.is-gold {
@@ -643,29 +682,8 @@
   border: 2px dashed var(--warn);
 }
 
-.award {
-  font-weight: 650;
-}
-
-.award.is-gold {
-  color: var(--gold);
-}
-
-.award.is-silver {
-  color: var(--silver);
-}
-
-.award.is-bronze {
-  color: var(--bronze);
-}
-
-/* 并列组横跨奖级边界 —— 只能并列显示两个候选，不替评委组拍板 */
-.award-pending {
-  color: var(--warn);
-  font-weight: 650;
-  font-size: 12.5px;
-  white-space: normal;
-}
+/* 奖级已从结果页撤掉（.award / .award-pending 随之删除）。
+   奖级仍然照《评选方案》计算，只是不在这页显示 —— Excel「汇总」页里还有。 */
 
 /* 总分取整到 2 位小数之后同分是常态，被顺位分开的行给个记号，
    鼠标悬停能看到是第几顺位、按哪个维度分的 */
@@ -692,16 +710,17 @@
 /* ⚠️ 必须单独写这一条：`.grid th` 的特异度是 (0,1,1)，压过 `.num-cell` (0,1,0)，
    于是表头会落成 text-align:left，而数据格是 right —— 数字贴着列的右边、
    表头却贴着列的左边，中间隔着大半个列宽，看着就像两列没对齐。
-   受影响的三处：结果表「加权总分 / 票数」、场次表「已收 / 应到」、登录码表「已评位数」。 */
+   受影响的三处：结果表「加权总分」、场次表「已收 / 应到」、登录码表「已评位数」。 */
 .grid th.num-cell {
   text-align: right;
 }
 
+/* 总分是这张表的落点，行变高之后跟着放大一点，远看才立得住 */
 .total-cell {
   text-align: right;
   font-family: var(--mono);
   font-weight: 700;
-  font-size: 14.5px;
+  font-size: 17px;
   color: var(--accent);
 }
 
