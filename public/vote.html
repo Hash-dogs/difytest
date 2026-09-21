@@ -9,8 +9,12 @@
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f5fd0'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' stroke='white' stroke-width='3.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
     />
     <title>评委打分</title>
-    <link rel="stylesheet" href="/common.css" />
-    <link rel="stylesheet" href="/vote.css" />
+    <!-- {{BASE}} 由服务端在下发时替换成实际的口令前缀（src/pages.js） -->
+    <script>
+      window.PFXT_BASE = '{{BASE}}';
+    </script>
+    <link rel="stylesheet" href="{{BASE}}/common.css" />
+    <link rel="stylesheet" href="{{BASE}}/vote.css" />
   </head>
   <body>
     <div class="vote-shell">
@@ -28,7 +32,7 @@
           <div class="big-icon" id="blocked-icon">⚠️</div>
           <h2 id="blocked-title"></h2>
           <p id="blocked-desc"></p>
-          <a class="btn btn-primary" id="blocked-action" href="/v" hidden>重新输入登录码</a>
+          <a class="btn btn-primary" id="blocked-action" href="{{BASE}}/v" hidden>重新输入登录码</a>
         </div>
       </section>
 
@@ -83,6 +87,6 @@
 
     <div id="modal-root"></div>
 
-    <script src="/vote.js"></script>
+    <script src="{{BASE}}/vote.js"></script>
   </body>
 </html>

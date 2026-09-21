@@ -20,6 +20,9 @@
  *   「链接改在系统浏览器打开」这类上下文切换。
  */
 (function () {
+  // 口令前缀，由 vote.html 内联注入（见 src/pages.js）。空串 = 未启用前缀。
+  var BASE = window.PFXT_BASE || '';
+
   var CODE_KEY = 'pfxt:code';
   var DRAFT_PREFIX = 'pfxt:draft:';
   var POLL_MS = 3000;
@@ -99,7 +102,12 @@
    * 所以 URL 里的码才是权威来源。
    */
   function codeFromUrl() {
+    // 前缀要参与匹配：页面地址是 `/<口令>/v/<码>`，只认 `^/v/` 会解析不出码，
+    // 于是每次刷新都退到 localStorage 兜底 —— 企微里 localStorage 恰好最不可靠。
     var m = location.pathname.match(/^\/v\/([^/]+)\/?$/);
+    if (!m && BASE && location.pathname.indexOf(BASE + '/v/') === 0) {
+      m = location.pathname.slice(BASE.length).match(/^\/v\/([^/]+)\/?$/);
+    }
     return m ? decodeURIComponent(m[1]).toUpperCase() : '';
   }
 
@@ -284,7 +292,7 @@
       return;
     }
 
-    fetch('/api/v/' + encodeURIComponent(S.code) + '/state', {
+    fetch(BASE + '/api/v/' + encodeURIComponent(S.code) + '/state', {
       headers: { Accept: 'application/json' },
       cache: 'no-store',
     })
@@ -401,7 +409,7 @@
       }),
     };
 
-    fetch('/api/v/' + encodeURIComponent(S.code) + '/submit', {
+    fetch(BASE + '/api/v/' + encodeURIComponent(S.code) + '/submit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

@@ -7,6 +7,11 @@
  */
 
 (function () {
+  // 口令前缀，由 admin.html 内联注入（见 src/pages.js）。空串 = 未启用前缀。
+  // ⚠️ 站内所有 URL 都要经它拼 —— 后台地址是 `/<口令>/admin`，写死 '/api/...'
+  //    会打到根路径上，得到的是一句没头没脑的 404。
+  const BASE = window.PFXT_BASE || '';
+
   const $ = (id) => document.getElementById(id);
   const esc = (s) =>
     String(s ?? '').replace(
@@ -38,7 +43,7 @@
   }
 
   async function api(path, options = {}) {
-    const res = await fetch(path, {
+    const res = await fetch(BASE + path, {
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
       ...options,
@@ -112,7 +117,7 @@
 
   /**
    * ⚠️ navigator.clipboard 只在安全上下文可用。
-   * 评委/管理员走的是 http://<局域网IP>:3000，不是 https 也不是 localhost，
+   * 评委/管理员走的是 http://<公网IP>:3001，不是 https 也不是 localhost，
    * 那里 navigator.clipboard 是 undefined —— 必须准备 execCommand 回退。
    */
   async function copyText(text) {
@@ -510,7 +515,7 @@
     const target = entryUrls.find((u) => u.ip === ip) || entryUrls[0];
     if (!target) return;
     $('entry-url').value = target.url;
-    $('entry-qr-img').src = `/api/admin/qrcode.svg?ip=${encodeURIComponent(target.ip)}`;
+    $('entry-qr-img').src = `${BASE}/api/admin/qrcode.svg?ip=${encodeURIComponent(target.ip)}`;
   }
 
   $('entry-ip-select').addEventListener('change', applyEntry);
@@ -857,7 +862,7 @@
 
   $('btn-backup').addEventListener('click', () => {
     // 走浏览器下载；服务端用 SQLite 在线备份 API 生成一致性快照
-    window.location.href = '/api/admin/backup';
+    window.location.href = BASE + '/api/admin/backup';
     toast('已开始下载数据库备份');
   });
 
@@ -1013,7 +1018,7 @@
       return toast('还没有有效选票，无法导出', true);
     }
     // 走浏览器下载；Excel 由服务端生成，用带 Cookie 的同源请求即可
-    window.location.href = '/api/admin/results.xlsx';
+    window.location.href = BASE + '/api/admin/results.xlsx';
     toast('已开始下载 Excel');
   });
 
@@ -1138,7 +1143,7 @@
     if (!state.detail || !state.detail.rows || !state.detail.rows.length) {
       return toast('还没有开始任何一场，没有明细可导出', true);
     }
-    window.location.href = '/api/admin/detail.xlsx';
+    window.location.href = BASE + '/api/admin/detail.xlsx';
     toast('已开始下载评分明细');
   });
 

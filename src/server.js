@@ -1,33 +1,48 @@
 'use strict';
 
-const path = require('node:path');
 const express = require('express');
 
 const { ensureSeed, printSeedReport } = require('./seed');
 const { DB_PATH } = require('./db');
-const { entryUrls } = require('./net');
+const { entryUrls, withBase, BASE_PATH } = require('./net');
+const { sendPage, PUBLIC_DIR } = require('./pages');
 const voteRoutes = require('./routes/vote');
 const adminRoutes = require('./routes/admin');
 
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = Number(process.env.PORT) || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
-const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
 const app = express();
 app.set('trust proxy', false);
 app.disable('x-powered-by');
 
 app.use(express.json({ limit: '512kb' }));
-app.use(express.static(PUBLIC_DIR));
 
-app.get('/', (req, res) => res.redirect('/admin'));
-app.get('/admin', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'admin.html')));
+/**
+ * 整站挂在口令前缀下（PLAN §4）。
+ *
+ * ⚠️ 前缀是**整站**的，不是只管页面：`/api/admin/*` 也必须在前缀之内。
+ *    只藏页面而把接口留在根路径，等于把口令验证留给扫描器去猜 —— 前缀就没意义了。
+ */
+const staticFiles = express.static(PUBLIC_DIR, { index: false });
+app.use(BASE_PATH || '/', (req, res, next) => {
+  // 页面一律走 sendPage 下发（要替换 {{BASE}} 占位符）。
+  // 放静态中间件直接吐 .html 的话，`/admin.html` 会渲染出资源全 404 的破页面，
+  // 而真正的后台地址是 `/admin` —— 这种「看起来坏了」比干脆 404 更难排查。
+  if (req.path.endsWith('.html')) return next();
+  staticFiles(req, res, next);
+});
 
-app.use(voteRoutes);
-app.use(adminRoutes);
+app.get(BASE_PATH || '/', (req, res) => res.redirect(withBase('/admin')));
+app.get(withBase('/admin'), (req, res) => sendPage(res, 'admin.html'));
+
+app.use(BASE_PATH || '/', voteRoutes);
+app.use(BASE_PATH || '/', adminRoutes);
 
 app.use((req, res) => {
-  if (req.path.startsWith('/api/')) {
+  // ⚠️ 前缀之外的任何路径都回同一个 404，不区分「路径不存在」与「前缀不对」——
+  //    区分开就等于告诉扫描器「你猜的路由是对的，只是少了前缀」。
+  if (req.path.startsWith(withBase('/api/'))) {
     return res.status(404).json({ ok: false, error: 'not_found', message: '接口不存在。' });
   }
   res.status(404).send('404 Not Found');
@@ -55,7 +70,12 @@ const server = app.listen(PORT, HOST, () => {
   console.log('   演讲比赛匿名打分系统已启动');
   console.log('  ════════════════════════════════════════════════');
   console.log('');
-  console.log('   管理后台（本机）：http://localhost:' + PORT + '/admin');
+  console.log('   管理后台（本机）：http://localhost:' + PORT + withBase('/admin'));
+  console.log(
+    BASE_PATH
+      ? '   🔑 口令前缀：' + BASE_PATH
+      : '   ⚠️ 未启用口令前缀（PFXT_BASE_PATH 为空）—— 后台直接挂在根路径上'
+  );
   console.log('');
 
   if (configured.length) {
@@ -76,7 +96,7 @@ const server = app.listen(PORT, HOST, () => {
     console.log('');
     console.log('   ⚠️ 部署到云服务器时**必须**设置 PFXT_PUBLIC_URL，否则 os.networkInterfaces()');
     console.log('      只会返回内网 IP（10.x），二维码会指向评委根本连不上的地址：');
-    console.log('         PFXT_PUBLIC_URL=http://<公网IP>:' + PORT);
+    console.log('         PFXT_PUBLIC_URL=http://<公网IP>:' + PORT + '   （口令前缀会自动补上）');
     console.log('');
   } else {
     console.log('   ⚠️ 没有检测到任何可用地址，手机可能访问不到。');
@@ -95,8 +115,8 @@ server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     const hint =
       process.platform === 'win32'
-        ? 'set PORT=3001 && npm start'
-        : 'PORT=3001 npm start';
+        ? `set PORT=${PORT + 1} && npm start`
+        : `PORT=${PORT + 1} npm start`;
     console.error('');
     console.error(`  端口 ${PORT} 已被占用。`);
     console.error(`  换个端口再启动：  ${hint}`);
@@ -107,7 +127,7 @@ server.on('error', (err) => {
     console.error('');
     console.error(`  没有权限绑定端口 ${PORT}。`);
     console.error('  1024 以下的端口需要 root；换个高位端口即可，例如：');
-    console.error('    PORT=3000 npm start');
+    console.error('    PORT=3001 npm start');
     console.error('');
     process.exit(1);
   }

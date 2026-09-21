@@ -9,8 +9,13 @@
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f5fd0'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' stroke='white' stroke-width='3.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
     />
     <title>进入评分</title>
-    <link rel="stylesheet" href="/common.css" />
-    <link rel="stylesheet" href="/vote.css" />
+    <!-- {{BASE}} 由服务端在下发时替换成实际的口令前缀（src/pages.js）。
+         必须写成绝对路径 + 前缀：`/v/:code` 这类深层路径下相对路径会算错目录。 -->
+    <script>
+      window.PFXT_BASE = '{{BASE}}';
+    </script>
+    <link rel="stylesheet" href="{{BASE}}/common.css" />
+    <link rel="stylesheet" href="{{BASE}}/vote.css" />
   </head>
   <body>
     <div class="vote-shell">
@@ -71,6 +76,7 @@
        */
       (function () {
         var KEY = 'pfxt:code';
+        var BASE = window.PFXT_BASE || '';
 
         var loading = document.getElementById('screen-loading');
         var codeScreen = document.getElementById('screen-code');
@@ -121,7 +127,7 @@
           btn.disabled = true;
           errBox.hidden = true;
 
-          fetch('/api/v/login', {
+          fetch(BASE + '/api/v/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ code: code }),
@@ -139,7 +145,7 @@
                 return;
               }
               lsSet(data.code);
-              location.replace('/v/' + encodeURIComponent(data.code));
+              location.replace(BASE + '/v/' + encodeURIComponent(data.code));
             })
             .catch(function () {
               btn.disabled = false;

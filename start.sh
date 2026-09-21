@@ -4,8 +4,10 @@
 # 等价于 Windows 上的 start.bat
 #
 # 用法：
-#   ./start.sh              默认 3000 端口
-#   PORT=8080 ./start.sh    换端口
+#   ./start.sh                          默认 3001 端口 + 内置口令前缀
+#   PORT=8080 ./start.sh                换端口
+#   PFXT_BASE_PATH= ./start.sh          取消口令前缀（仅本机开发用）
+#   PFXT_PUBLIC_URL=http://1.2.3.4:3001 ./start.sh   公网地址（前缀会自动补上）
 #
 set -euo pipefail
 
@@ -49,7 +51,7 @@ fi
 
 # 提示防火墙：Linux 上默认多半是开着的，手机连不上通常卡在这里
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi '^Status: active'; then
-  PORT_TO_CHECK="${PORT:-3000}"
+  PORT_TO_CHECK="${PORT:-3001}"
   if ! ufw status 2>/dev/null | grep -q "^${PORT_TO_CHECK}"; then
     echo " [!] ufw is active but port ${PORT_TO_CHECK} does not appear to be allowed."
     echo "     If phones cannot reach this machine, run:"

@@ -7,8 +7,9 @@
  *   PFXT_PASSWORD=<启动横幅里打印的口令> npm run acceptance
  *
  * 可选环境变量：
- *   PFXT_BASE   服务地址，默认 http://127.0.0.1:3000
- *   PFXT_DB     数据库文件，默认 data/pfxt.db（匿名性结构检查要用）
+ *   PFXT_BASE       服务地址，默认 http://127.0.0.1:3001 + 口令前缀
+ *   PFXT_BASE_PATH  口令前缀；不设则用 src/net.js 里的默认值（与服务端同源，不会跑偏）
+ *   PFXT_DB         数据库文件，默认 data/pfxt.db（匿名性结构检查要用）
  *
  * ⚠️ 会往库里写场次、选票、短码，并**清空演练数据**。请在测试库上跑，
  *    不要对着正式数据跑。
@@ -17,7 +18,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const BASE = process.env.PFXT_BASE || 'http://127.0.0.1:3000';
+// 前缀与服务端同源取（src/net.js 也读 PFXT_BASE_PATH），避免两处各写一份而漂移
+const { BASE_PATH } = require('../src/net');
+const PORT = process.env.PORT || 3001;
+const BASE = process.env.PFXT_BASE || `http://127.0.0.1:${PORT}` + BASE_PATH;
 const PASSWORD = process.env.PFXT_PASSWORD;
 const DB_PATH = process.env.PFXT_DB || path.join(__dirname, '..', 'data', 'pfxt.db');
 
@@ -77,6 +81,17 @@ async function api(method, url, body) {
  */
 async function preflight() {
   const probe = await api('POST', '/api/v/login', { code: 'ZZZZZZZZ' });
+
+  // 404 基本只有一个原因：地址少了口令前缀。说清楚，别让人对着 60 个失败项发懵。
+  if (probe.status === 404) {
+    console.error(
+      `\n⚠️  ${BASE}/api/v/login 返回 404 —— 地址多半少了口令前缀。\n` +
+        `    正确形态：http://<主机>:${PORT}${BASE_PATH}\n` +
+        '    不设 PFXT_BASE，本脚本会自动按 src/net.js 的默认前缀拼地址。\n'
+    );
+    process.exit(2);
+  }
+
   if (probe.status === 429) {
     console.error(
       '\n⚠️  本机 IP 的登录尝试额度已被用光 —— 多半是上一次验收跑完留下的。\n' +
@@ -193,6 +208,73 @@ async function checkAuth() {
   const login = await api('POST', '/api/admin/login', { password: PASSWORD });
   check('正确口令 → 200', login.status === 200, JSON.stringify(login.data));
   check('下发了会话 cookie', !!cookie);
+
+  // 会话 cookie 与一份「旧版本残留在 Path=/ 上的同名 cookie」并存时，必须仍然算已登录。
+  // 现实中必然出现：cookie 不区分端口，改前缀前的部署在 :3000 上留过一份 Path=/ 的同名 cookie。
+  // 早期写法「后者覆盖前者」会取到那份失效的旧 token —— 症状是登录返回 200 却立刻被踢回登录页。
+  const dup = await fetch(BASE + '/api/admin/config', {
+    headers: { Cookie: `pfxt_admin=EXPIRED_OLD_TOKEN; ${cookie}` },
+  });
+  check('同名 cookie 并存时仍认有效的那一份', dup.status === 200, String(dup.status));
+
+  const onlyStale = await fetch(BASE + '/api/admin/config', {
+    headers: { Cookie: 'pfxt_admin=EXPIRED_OLD_TOKEN' },
+  });
+  check('只有失效的旧 cookie → 仍然 401', onlyStale.status === 401, String(onlyStale.status));
+}
+
+/* ========================= 二·五、口令前缀把门（PLAN §4） ========================= */
+
+/**
+ * 前缀的意义是「扫描器发现不了这有个后台」，所以这里必须验证**不带前缀的
+ * 应答与「路径不存在」完全一致** —— 一旦 404 的措辞不同（比如返回 JSON、
+ * 或说「缺少前缀」），等于主动告诉对方前缀这回事，藏起来就白藏了。
+ */
+async function checkBasePath() {
+  section('二·五、口令前缀');
+
+  if (!BASE_PATH) {
+    console.log('  · 未启用口令前缀（PFXT_BASE_PATH 为空），本节跳过');
+    return;
+  }
+
+  const origin = BASE.slice(0, BASE.length - BASE_PATH.length);
+  const unprefixed = [
+    '/',
+    '/admin',
+    '/v',
+    '/api/admin/rounds',
+    '/api/v/login',
+    '/admin.js',
+    '/admin.css',
+  ];
+
+  let allClosed = true;
+  let firstLeak = '';
+  for (const p of unprefixed) {
+    const res = await fetch(origin + p, { redirect: 'manual' });
+    if (res.status !== 404) {
+      allClosed = false;
+      if (!firstLeak) firstLeak = `${p} → ${res.status}`;
+    }
+  }
+  check('根路径下的旧地址全部 404（含页面与接口）', allClosed, firstLeak);
+
+  // 404 的措辞必须一致，不能因为「少写前缀」而给出不一样的回应
+  const rootBody = await (await fetch(origin + '/admin')).text();
+  const bogusBody = await (await fetch(origin + '/this-path-never-exists')).text();
+  check('未带前缀与随机路径的 404 响应体一致', rootBody === bogusBody, `${rootBody} / ${bogusBody}`);
+
+  const withPrefix = await fetch(BASE + '/v');
+  check('带前缀的入口页可访问', withPrefix.status === 200, String(withPrefix.status));
+
+  const html = await withPrefix.text();
+  check('入口页里的资源路径都带前缀', !/["']\/(common|vote|admin)\.(css|js)["']/.test(html));
+
+  const adminRes = await fetch(BASE + '/admin');
+  const adminHtml = await adminRes.text();
+  check('后台页面可访问', adminRes.status === 200, String(adminRes.status));
+  check('后台页面按前缀注入 window.PFXT_BASE', adminHtml.includes(`window.PFXT_BASE = '${BASE_PATH}'`));
 }
 
 /* ============================ 三、配置与场次控制 ============================ */
@@ -635,6 +717,7 @@ async function checkRateLimit() {
   try {
     await preflight();
     await checkAuth();
+    await checkBasePath();
     await checkConfigAndRounds();
     await checkLogin();
     const { r1, r2 } = await checkMainFlow();

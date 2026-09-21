@@ -13,7 +13,7 @@ const { db, DB_PATH, DATA_DIR, getSetting, setSetting, readConfig } = require('.
 const { verifyPassword } = require('../seed');
 const { computeResults, pickEffectiveRounds, MAX_JUDGES } = require('../scoring');
 const { randomCode } = require('../codes');
-const { entryUrls } = require('../net');
+const { entryUrls, BASE_PATH } = require('../net');
 const { buildXlsx } = require('../xlsx');
 const rounds = require('../rounds');
 const qrcode = require('qrcode-generator');
@@ -23,7 +23,10 @@ const router = express.Router();
 const SESSION_COOKIE = 'pfxt_admin';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const MAX_INVITES_PER_BATCH = 500;
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = Number(process.env.PORT) || 3001;
+
+// 会话 cookie 收在前缀之内：根路径下不再有其他东西，把作用域放大没有好处
+const COOKIE_PATH = BASE_PATH || '/';
 
 /* ------------------------------- 会话 ------------------------------- */
 
@@ -35,34 +38,55 @@ function issueSession() {
   return token;
 }
 
-function parseCookies(req) {
+/** 取某个名字的**全部** cookie 值（同名 cookie 可能有多份，理由见 isAuthed） */
+function cookieValues(req, name) {
   const header = req.headers.cookie;
-  if (!header) return {};
-  const out = {};
+  if (!header) return [];
+  const out = [];
   for (const part of header.split(';')) {
     const eq = part.indexOf('=');
     if (eq < 0) continue;
-    const key = part.slice(0, eq).trim();
-    if (!key) continue;
+    if (part.slice(0, eq).trim() !== name) continue;
+    const raw = part.slice(eq + 1).trim();
     try {
-      out[key] = decodeURIComponent(part.slice(eq + 1).trim());
+      out.push(decodeURIComponent(raw));
     } catch {
-      out[key] = part.slice(eq + 1).trim();
+      out.push(raw);
     }
   }
   return out;
 }
 
+/**
+ * ⚠️ 只要**任意一份**同名 cookie 是有效会话，就算已登录 —— 不要「取其中一份」。
+ *
+ * 为什么会同时存在多份同名 cookie：会话 cookie 收在前缀之内（`Path=<口令前缀>`），
+ * 而 2026-09-21 加前缀之前的版本把它设在 `Path=/`。**cookie 不区分端口**，
+ * 于是浏览器里(`:3000` 时代留下的)旧那份和现在这份并存，每次请求一起发过来。
+ *
+ * 早期的写法是 `parseCookies` 逐段赋值、**后者覆盖前者** —— 那会取到旧那份早已
+ * 失效的 token，症状是：**口令正确、登录接口也返回 200，却立刻被踢回登录页**
+ * （之后每个接口都 401「请先登录。」）。排查代价不小，落地时真实发生过。
+ *
+ * 改「先到先得」能修好，但仍然依赖浏览器的排序行为（RFC 6265 §5.4 说按路径长度
+ * 降序，实践中浏览器都遵守）。这里干脆不看顺序：**逐份验证，有一份有效即可**。
+ * 安全性没有变化 —— token 是 32 字节随机数，能拿出一份有效的就说明它本来就是你的。
+ *
+ * 登录成功时还会把这个名字在 `Path=/` 上的残留一并清掉（见下面的 login 路由），
+ * 所以正常情况下下一次请求就只有一份了；这里是兜底。
+ */
 function isAuthed(req) {
-  const token = parseCookies(req)[SESSION_COOKIE];
-  if (!token) return false;
-  const expiresAt = sessions.get(token);
-  if (!expiresAt) return false;
-  if (expiresAt < Date.now()) {
-    sessions.delete(token);
-    return false;
+  let ok = false;
+  for (const token of cookieValues(req, SESSION_COOKIE)) {
+    const expiresAt = sessions.get(token);
+    if (!expiresAt) continue;
+    if (expiresAt < Date.now()) {
+      sessions.delete(token);
+      continue;
+    }
+    ok = true;
   }
-  return true;
+  return ok;
 }
 
 function requireAdmin(req, res, next) {
@@ -155,15 +179,18 @@ router.post('/api/admin/login', (req, res) => {
     httpOnly: true,
     sameSite: 'lax',
     maxAge: SESSION_TTL_MS,
-    path: '/',
+    path: COOKIE_PATH,
   });
+  // 顺手清掉改前缀之前留在 Path=/ 上的同名 cookie（理由见 isAuthed）。
+  // 两者 (name, domain, path) 不同，删的是那条旧残留，不会碰到刚下发的这条。
+  if (COOKIE_PATH !== '/') res.clearCookie(SESSION_COOKIE, { path: '/' });
   res.json({ ok: true });
 });
 
 router.post('/api/admin/logout', requireAdmin, (req, res) => {
-  const token = parseCookies(req)[SESSION_COOKIE];
-  if (token) sessions.delete(token);
-  res.clearCookie(SESSION_COOKIE, { path: '/' });
+  for (const token of cookieValues(req, SESSION_COOKIE)) sessions.delete(token);
+  res.clearCookie(SESSION_COOKIE, { path: COOKIE_PATH });
+  if (COOKIE_PATH !== '/') res.clearCookie(SESSION_COOKIE, { path: '/' });
   res.json({ ok: true });
 });
 

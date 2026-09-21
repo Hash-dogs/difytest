@@ -13,12 +13,13 @@
 
 const express = require('express');
 const crypto = require('node:crypto');
-const path = require('node:path');
 const { db, getSetting } = require('../db');
 const { getLiveRound, hasSubmitted } = require('../rounds');
+const { sendPage } = require('../pages');
 
+// ⚠️ 本文件的路径都是**相对前缀**的：server.js 用 `app.use(BASE_PATH, voteRoutes)`
+//    整体挂载，所以这里照旧写 '/v'、'/api/v/...' 即可，别在这里拼前缀。
 const router = express.Router();
-const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
 
 const selectInvite = db.prepare('SELECT code, revoked FROM invite WHERE code = ?');
 // ⚠️ 2026-09-18 起选票带 code —— 结果页要能列出每位评委的打分（见 src/db.js 文件头）。
@@ -90,7 +91,7 @@ const normalizeCode = (raw) => String(raw || '').toUpperCase().replace(/[^A-Z0-9
 
 /** GET /v —— 统一入口：短码输入页（二维码指向这里） */
 router.get('/v', (req, res) => {
-  res.sendFile(path.join(PUBLIC_DIR, 'entry.html'));
+  sendPage(res, 'entry.html');
 });
 
 /**
@@ -99,7 +100,7 @@ router.get('/v', (req, res) => {
  * 这样评委看到的是一句能读懂的中文，而不是浏览器的 404。
  */
 router.get('/v/:code', (req, res) => {
-  res.sendFile(path.join(PUBLIC_DIR, 'vote.html'));
+  sendPage(res, 'vote.html');
 });
 
 /* ------------------------------- 接口 ------------------------------- */
