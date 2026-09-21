@@ -7,9 +7,13 @@
  *   PFXT_PASSWORD=<启动横幅里打印的口令> npm run acceptance
  *
  * 可选环境变量：
- *   PFXT_BASE       服务地址，默认 http://127.0.0.1:3001 + 口令前缀
- *   PFXT_BASE_PATH  口令前缀；不设则用 src/net.js 里的默认值（与服务端同源，不会跑偏）
+ *   PFXT_BASE       服务地址，默认 http://127.0.0.1:3001（服务端若开了路径前缀会自动接上）
+ *   PFXT_BASE_PATH  路径前缀；不设则用 src/net.js 里的默认值
+ *   PFXT_TOKEN      请求头令牌；不设则用 src/net.js 里的默认值
  *   PFXT_DB         数据库文件，默认 data/pfxt.db（匿名性结构检查要用）
+ *
+ * 两道暗号都从 src/net.js 读（与服务端同源），所以不用手工同步 ——
+ * 改了服务端的 PFXT_* 之后，验收跟着一起设同样的环境变量即可。
  *
  * ⚠️ 会往库里写场次、选票、短码，并**清空演练数据**。请在测试库上跑，
  *    不要对着正式数据跑。
@@ -18,12 +22,16 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// 前缀与服务端同源取（src/net.js 也读 PFXT_BASE_PATH），避免两处各写一份而漂移
-const { BASE_PATH } = require('../src/net');
+// 暗号（路径前缀 + 请求头令牌）与服务端同源取（src/net.js 读同样的环境变量），
+// 避免两处各写一份而漂移 —— 跑验收的人不该还要手工同步一遍暗号
+const { BASE_PATH, API_TOKEN, TOKEN_HEADER } = require('../src/net');
 const PORT = process.env.PORT || 3001;
 const BASE = process.env.PFXT_BASE || `http://127.0.0.1:${PORT}` + BASE_PATH;
 const PASSWORD = process.env.PFXT_PASSWORD;
 const DB_PATH = process.env.PFXT_DB || path.join(__dirname, '..', 'data', 'pfxt.db');
+
+/** 服务端对 GET/HEAD 校验令牌头，本脚本所有直连 fetch 都得带上，否则一律 404 */
+const TOKEN_HEADERS = API_TOKEN ? { [TOKEN_HEADER]: API_TOKEN } : {};
 
 if (!PASSWORD) {
   console.error('缺少 PFXT_PASSWORD —— 请填启动横幅里打印的管理员口令。');
@@ -56,6 +64,7 @@ async function api(method, url, body) {
     method,
     headers: {
       'Content-Type': 'application/json',
+      ...TOKEN_HEADERS,
       ...(cookie ? { Cookie: cookie } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -80,17 +89,20 @@ async function api(method, url, body) {
  * 这里先探一次，把原因直接说出来，而不是让人去猜。
  */
 async function preflight() {
-  const probe = await api('POST', '/api/v/login', { code: 'ZZZZZZZZ' });
-
-  // 404 基本只有一个原因：地址少了口令前缀。说清楚，别让人对着 60 个失败项发懵。
-  if (probe.status === 404) {
+  // 先探「地址 + 令牌」这对配置。**必须用 GET** —— 服务端的请求头守卫只拦
+  // GET/HEAD，拿 POST 去探是探不出令牌问题的（那边根本不受守卫管）。
+  const reach = await fetch(BASE + '/api/admin/session', { headers: TOKEN_HEADERS });
+  if (reach.status === 404) {
     console.error(
-      `\n⚠️  ${BASE}/api/v/login 返回 404 —— 地址多半少了口令前缀。\n` +
-        `    正确形态：http://<主机>:${PORT}${BASE_PATH}\n` +
-        '    不设 PFXT_BASE，本脚本会自动按 src/net.js 的默认前缀拼地址。\n'
+      `\n⚠️  GET ${BASE}/api/admin/session 返回 404 —— 地址或令牌跟服务端对不上。\n` +
+        `    服务端当前形态：http://<主机>:${PORT}${BASE_PATH || '（无路径前缀）'}\n` +
+        (API_TOKEN ? `    GET 还必须带请求头：${TOKEN_HEADER}: ${API_TOKEN}\n` : '') +
+        '    本脚本按 src/net.js 的默认值拼，两边 PFXT_* 环境变量不一致时就会这样。\n'
     );
     process.exit(2);
   }
+
+  const probe = await api('POST', '/api/v/login', { code: 'ZZZZZZZZ' });
 
   if (probe.status === 429) {
     console.error(
@@ -202,7 +214,7 @@ async function checkAuth() {
   const wrong = await api('POST', '/api/admin/login', { password: PASSWORD + 'x' });
   check('错误口令 → 401', wrong.status === 401, String(wrong.status));
 
-  const bare = await fetch(BASE + '/api/admin/rounds');
+  const bare = await fetch(BASE + '/api/admin/rounds', { headers: TOKEN_HEADERS });
   check('未登录访问管理接口 → 401', bare.status === 401, String(bare.status));
 
   const login = await api('POST', '/api/admin/login', { password: PASSWORD });
@@ -213,12 +225,12 @@ async function checkAuth() {
   // 现实中必然出现：cookie 不区分端口，改前缀前的部署在 :3000 上留过一份 Path=/ 的同名 cookie。
   // 早期写法「后者覆盖前者」会取到那份失效的旧 token —— 症状是登录返回 200 却立刻被踢回登录页。
   const dup = await fetch(BASE + '/api/admin/config', {
-    headers: { Cookie: `pfxt_admin=EXPIRED_OLD_TOKEN; ${cookie}` },
+    headers: { ...TOKEN_HEADERS, Cookie: `pfxt_admin=EXPIRED_OLD_TOKEN; ${cookie}` },
   });
   check('同名 cookie 并存时仍认有效的那一份', dup.status === 200, String(dup.status));
 
   const onlyStale = await fetch(BASE + '/api/admin/config', {
-    headers: { Cookie: 'pfxt_admin=EXPIRED_OLD_TOKEN' },
+    headers: { ...TOKEN_HEADERS, Cookie: 'pfxt_admin=EXPIRED_OLD_TOKEN' },
   });
   check('只有失效的旧 cookie → 仍然 401', onlyStale.status === 401, String(onlyStale.status));
 }
@@ -265,13 +277,13 @@ async function checkBasePath() {
   const bogusBody = await (await fetch(origin + '/this-path-never-exists')).text();
   check('未带前缀与随机路径的 404 响应体一致', rootBody === bogusBody, `${rootBody} / ${bogusBody}`);
 
-  const withPrefix = await fetch(BASE + '/v');
+  const withPrefix = await fetch(BASE + '/v', { headers: TOKEN_HEADERS });
   check('带前缀的入口页可访问', withPrefix.status === 200, String(withPrefix.status));
 
   const html = await withPrefix.text();
   check('入口页里的资源路径都带前缀', !/["']\/(common|vote|admin)\.(css|js)["']/.test(html));
 
-  const adminRes = await fetch(BASE + '/admin');
+  const adminRes = await fetch(BASE + '/admin', { headers: TOKEN_HEADERS });
   const adminHtml = await adminRes.text();
   check('后台页面可访问', adminRes.status === 200, String(adminRes.status));
   check('后台页面按前缀注入 window.PFXT_BASE', adminHtml.includes(`window.PFXT_BASE = '${BASE_PATH}'`));
@@ -501,7 +513,9 @@ async function checkResults(r1, r2) {
   check('总票数 == 各场已收份数之和', nBallot === nSubmitted, `${nBallot} vs ${nSubmitted}`);
 
   // Excel 导出
-  const xlsx = await fetch(BASE + '/api/admin/results.xlsx', { headers: { Cookie: cookie } });
+  const xlsx = await fetch(BASE + '/api/admin/results.xlsx', {
+    headers: { ...TOKEN_HEADERS, Cookie: cookie },
+  });
   const buf = Buffer.from(await xlsx.arrayBuffer());
   check('xlsx 导出 → 200', xlsx.status === 200, String(xlsx.status));
   check('xlsx 是 ZIP 结构（PK 头）', buf.length > 4 && buf[0] === 0x50 && buf[1] === 0x4b);
@@ -548,7 +562,7 @@ async function checkJudgeDetail() {
 
   // ---- 两份导出必须是**两份不同的报表** ----
   const grab = async (path) => {
-    const r = await fetch(BASE + path, { headers: { Cookie: cookie } });
+    const r = await fetch(BASE + path, { headers: { ...TOKEN_HEADERS, Cookie: cookie } });
     const buf = Buffer.from(await r.arrayBuffer());
     const xml = buf.toString('utf8');
     return {

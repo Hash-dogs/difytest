@@ -14,23 +14,58 @@ const os = require('node:os');
 const ENTRY_PATH = '/v'; // 固定入口，二维码指向这里
 
 /**
- * 口令前缀（URL 里的那一长串随机字符）—— **全站唯一真源**。
+ * ══════════════════════════════════════════════════════════════════════
+ *  口令 —— **全站唯一真源**（路径前缀与请求头令牌共用这一个值）
+ * ══════════════════════════════════════════════════════════════════════
  *
- * 为什么要有它：部署形态是「公网 IP 直连、不用域名、不备案」（PLAN §4）。
- * 这意味着 80/443 之外的那一个端口一旦放行，`/admin` 就等于挂在公网上裸奔 ——
- * 登录口令是唯一的门，而门是可以被暴力尝试的。加一段只有自己人知道的前缀后，
- * 扫描器连「这里有个后台」都发现不了，等于把门口藏起来。
+ * 部署形态是「公网 IP 直连、不用域名、不备案」（PLAN §4）。端口一旦放行，
+ * `/admin` 就等于挂在公网上 —— 登录口令是唯一的门，而门是可以被暴力尝试的。
+ * 加一道只有自己人知道的暗号后，扫描器连「这里有个后台」都发现不了。
  *
  * ⚠️ 它**不是**权限控制，只是「不被发现」。真正的鉴权仍然是管理员口令 +
- *    内存会话（见 src/routes/admin.js），前缀泄露的后果是退回原状、不是失守。
+ *    内存会话（`src/routes/admin.js`）与评委登录码。暗号泄露的后果是退回原状
+ *    （一个挂在公网上的后台），不是失守。
  *
- * 所有路径都要经 `withBase()` 拼；**不要**在别处硬编码这段前缀，也不要
- * 在代码里写 `'/api/...'` 这类绝对路径 —— 改前缀时那一定会漏掉几处。
+ * ── 两种承载方式，按部署环境二选一 ──────────────────────────────
  *
- * 用 PFXT_BASE_PATH 覆盖。显式设为空串（`PFXT_BASE_PATH=`）表示不加前缀、
- * 服务退回根路径（本机开发、或前端的反向代理已经把前缀摘掉时用）。
+ * 1. **路径前缀**（`DEFAULT_BASE_PATH` / `PFXT_BASE_PATH`）—— 暗号写在 URL 里：
+ *        http://<IP>:3001/<口令>/v
+ *    2026-09-21 首次实现用的是这个。
+ *
+ * 2. **请求头令牌**（`API_TOKEN` / `PFXT_TOKEN`，见下）—— 暗号写在
+ *    `token:` 请求头里，URL 保持干净：
+ *        curl -H "token: <口令>" http://<IP>:3001/v
+ *    当前**默认走这一种**（2026-09-21 晚改），因为公网映射/网关可以代加请求头，
+ *    而不一定能改写路径。
+ *
+ * 两者可以同时开，也可以都关（把两个环境变量都设成空串＝完全不设防，
+ * 只在纯内网调试时用）。都不是空的时，**两道都要过**。
  */
-const DEFAULT_BASE_PATH = '/M7xHqlq9giMXCJ6ohGzbIgw7tkwrfXSkjiraUXJw9tDZJF6SKobSkmggtMXpooDW';
+
+/**
+ * 路径前缀的默认值：**空＝不加前缀**（URL 就是 `ip:3001/v`）。
+ *
+ * 机制保留着而不是删掉 —— 换环境时一个环境变量就能切回来。
+ * 用 PFXT_BASE_PATH 覆盖（给它一段 `/xxx` 就重新启用前缀）。
+ */
+const DEFAULT_BASE_PATH = '';
+
+/**
+ * 请求头令牌的默认值。空串＝不校验。
+ *
+ * ⚠️ 只对 **GET / HEAD** 生效（`src/server.js` 的守卫里写着为什么）——
+ *    这样即使网关只在 GET 上代加请求头，页面自己的 POST / PUT 也不会被挡。
+ */
+const DEFAULT_API_TOKEN = 'M7xHqlq9giMXCJ6ohGzbIgw7tkwrfXSkjiraUXJw9tDZJF6SKobSkmggtMXpooDW';
+
+/** 承载令牌的请求头名。HTTP 头名大小写不敏感，`req.get()` 会自己归一化。 */
+const TOKEN_HEADER = 'token';
+
+/** 令牌只允许这类字符：会被插进 Set-Cookie 与 HTML，别让引号/分号进来 */
+const sanitizeToken = (raw) =>
+  String(raw == null ? '' : raw)
+    .trim()
+    .replace(/[^A-Za-z0-9._~-]/g, '');
 
 /**
  * 规范化成 `/xxx` 的样子（前导斜杠有、结尾斜杠无、空串表示不加前缀）。
@@ -48,8 +83,27 @@ function normalizeBasePath(raw) {
 
 const BASE_PATH = normalizeBasePath(process.env.PFXT_BASE_PATH ?? DEFAULT_BASE_PATH);
 
+const API_TOKEN = sanitizeToken(process.env.PFXT_TOKEN ?? DEFAULT_API_TOKEN);
+
 /** 给任意站内路径加上前缀。`''` 前缀时原样返回，调用方不必分支。 */
 const withBase = (p) => BASE_PATH + p;
+
+/**
+ * 这一条请求有没有带对令牌。
+ *
+ * ⚠️ 只在 **GET / HEAD** 上要求 —— 这是刻意的，别顺手改成「所有方法」：
+ *    公网映射/网关代加请求头时只能盲加（它分不出导航请求与 XHR），
+ *    但也可能有按方法配置的网关。只在 GET 上要求，这两种网关下**都能跑通**：
+ *      · 网关只给 GET 加 → GET 全带上（含页面里的轮询），POST/PUT 不校验、照常放行
+ *      · 网关给所有请求都加 → GET 依然全带上，结果一样
+ *    反过来若要求所有方法，第一种网关下页面自己的提交就会被自己挡死。
+ *
+ *    代价是 POST / PUT **不在这一层保护之内**。它们是靠真正的鉴权兜底的：
+ *    管理端要口令 + 会话，评委端要登录码。这道令牌本来就只是「不被发现」。
+ */
+const isGuardedMethod = (method) => method === 'GET' || method === 'HEAD';
+
+const tokenOk = (req) => !API_TOKEN || req.get(TOKEN_HEADER) === API_TOKEN;
 
 // 虚拟/隧道网卡 —— 这些地址别的设备访问不到，必须排到最后
 const VIRTUAL_PATTERNS = [
@@ -184,7 +238,12 @@ module.exports = {
   entryUrls,
   hostOf,
   withBase,
+  isGuardedMethod,
+  tokenOk,
   ENTRY_PATH,
   BASE_PATH,
   DEFAULT_BASE_PATH,
+  API_TOKEN,
+  DEFAULT_API_TOKEN,
+  TOKEN_HEADER,
 };

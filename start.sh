@@ -4,10 +4,15 @@
 # 等价于 Windows 上的 start.bat
 #
 # 用法：
-#   ./start.sh                          默认 3001 端口 + 内置口令前缀
+#   ./start.sh                          默认 3001 端口 + 内置请求头令牌
 #   PORT=8080 ./start.sh                换端口
-#   PFXT_BASE_PATH= ./start.sh          取消口令前缀（仅本机开发用）
-#   PFXT_PUBLIC_URL=http://1.2.3.4:3001 ./start.sh   公网地址（前缀会自动补上）
+#   PFXT_TOKEN= ./start.sh              关掉请求头令牌（仅本机开发用）
+#   PFXT_BASE_PATH=/xxxx ./start.sh     改用路径前缀承载暗号（URL 变成 /xxxx/v）
+#   PFXT_PUBLIC_URL=http://1.2.3.4:3001 ./start.sh   公网地址（二维码指向它）
+#
+# ⚠️ 请求头令牌只拦 GET/HEAD，且**浏览器地址栏发不出自定义请求头** ——
+#    必须由公网映射/网关在转发时代加 `token: <口令>`，否则页面一律 404。
+#    自测：curl -H "token: <口令>" http://127.0.0.1:3001/v
 #
 set -euo pipefail
 
