@@ -48,7 +48,7 @@ const ENTRY_PATH = '/v'; // 固定入口，二维码指向这里
  * 机制保留着而不是删掉 —— 换环境时一个环境变量就能切回来。
  * 用 PFXT_BASE_PATH 覆盖（给它一段 `/xxx` 就重新启用前缀）。
  */
-const DEFAULT_BASE_PATH = '';
+const DEFAULT_BASE_PATH = '/token=M7xHqlq9giMXCJ6ohGzbIgw7tkwrfXSkjiraUXJw9tDZJF6SKobSkmggtMXpooDW';
 
 /**
  * 请求头令牌的默认值。空串＝不校验。
@@ -56,7 +56,7 @@ const DEFAULT_BASE_PATH = '';
  * ⚠️ 只对 **GET / HEAD** 生效（`src/server.js` 的守卫里写着为什么）——
  *    这样即使网关只在 GET 上代加请求头，页面自己的 POST / PUT 也不会被挡。
  */
-const DEFAULT_API_TOKEN = 'M7xHqlq9giMXCJ6ohGzbIgw7tkwrfXSkjiraUXJw9tDZJF6SKobSkmggtMXpooDW';
+const DEFAULT_API_TOKEN = '';
 
 /** 承载令牌的请求头名。HTTP 头名大小写不敏感，`req.get()` 会自己归一化。 */
 const TOKEN_HEADER = 'token';
@@ -75,7 +75,7 @@ const sanitizeToken = (raw) =>
 function normalizeBasePath(raw) {
   const cleaned = String(raw == null ? '' : raw)
     .trim()
-    .replace(/[^A-Za-z0-9/._~-]/g, '');
+    .replace(/[^A-Za-z0-9/=._~-]/g, '');
   if (!cleaned || cleaned === '/') return '';
   const withLead = cleaned.startsWith('/') ? cleaned : `/${cleaned}`;
   return withLead.replace(/\/+$/, '');
