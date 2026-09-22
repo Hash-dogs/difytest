@@ -514,7 +514,8 @@ router.post('/api/admin/rounds/:id/reopen', requireAdmin, (req, res) => {
 
 /**
  * 清空演练数据（PLAN §8.3）。彩排完必定要用，否则只能手工删库，更危险。
- * 保留演讲者、维度、登录码、管理员设置。
+ * 保留演讲者、维度、管理员设置；**登录码一并删除**（见 rounds.resetAll 的说明）——
+ * 彩排发出的码不再有效，需要重新批量生成发放。
  */
 router.post('/api/admin/reset', requireAdmin, (req, res) => {
   if (!(req.body && req.body.confirm === 'RESET')) {
@@ -525,7 +526,8 @@ router.post('/api/admin/reset', requireAdmin, (req, res) => {
     ok: true,
     cleared,
     message:
-      '场次与选票已清空。演讲者、维度、登录码、管理员设置都保留，登录码可以继续使用。',
+      `场次与选票已清空，${cleared.codes} 个登录码同时删除、全部失效。` +
+      '演讲者、维度、管理员设置保留；请到「登录码」页重新生成发放。',
   });
 });
 

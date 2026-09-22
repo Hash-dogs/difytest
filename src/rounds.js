@@ -153,7 +153,16 @@ function reopenRound(roundId) {
 
 /**
  * 清空演练数据（PLAN §8.3）。
- * 清掉场次、提交记录、选票、评分；**保留**演讲者、维度、短码、设置。
+ * 清掉场次、提交记录、选票、评分、**全部登录码**；保留演讲者、维度、设置。
+ *
+ * ⚠️ 登录码是**删除**而不是标记作废（2026-09-22 变更）。
+ *    原先设计是保留短码好让彩排的码继续用，但彩排期间发出的码可能已经落到
+ *    非正式评委手上、或散在测试设备里，正式场次应当只认新签发的码。
+ *    删掉之后 invite 表为空，登录码页会回到「还没有登录码」，需要重新批量生成发放；
+ *    仍在用旧码的浏览器会拿到「登录码无效」。
+ *
+ * ⚠️ 本文件其余函数只碰 round / round_submission（见文件头），resetAll 是**唯一例外** ——
+ *    它是整库重置入口，绕不开 ballot / score / invite。
  */
 function resetAll() {
   const tx = db.transaction(() => {
@@ -161,14 +170,18 @@ function resetAll() {
     const submissions = db.prepare('SELECT COUNT(*) AS n FROM round_submission').get().n;
     const ballots = db.prepare('SELECT COUNT(*) AS n FROM ballot').get().n;
     const scores = db.prepare('SELECT COUNT(*) AS n FROM score').get().n;
+    const codes = db.prepare('SELECT COUNT(*) AS n FROM invite').get().n;
 
-    // 顺序无所谓（没建外键），但先删子表更符合直觉
+    // 顺序无所谓（没建外键），但先删子表更符合直觉。
+    // invite 必须在 round_submission 之后删：作废单个码时会拒绝「交过任一场」的码
+    // （见 routes/admin.js），整表删除没有这个约束，但保持同样的先后次序不容易踩坑。
     db.prepare('DELETE FROM round_submission').run();
     db.prepare('DELETE FROM score').run();
     db.prepare('DELETE FROM ballot').run();
     db.prepare('DELETE FROM round').run();
+    db.prepare('DELETE FROM invite').run();
 
-    return { rounds, submissions, ballots, scores };
+    return { rounds, submissions, ballots, scores, codes };
   });
 
   return tx();

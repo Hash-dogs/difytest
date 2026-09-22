@@ -30,7 +30,7 @@
 | 4 | 登录 | **统一入口 `/v` + 手输登录码**；码由后台**预先批量签发**，管理员一对一发放 | 见 §7.1 |
 | 5 | 登录码备注 | **不加备注名**，管理员另存一份对应表 | 数据层少一列身份信息 |
 | 6 | 评委人数 | 后台可配的**固定值**，作为「已收 X / N」的分母 | 上限 20，见 §6.4 |
-| 7 | 彩排 | 提供**一键重置**（清场次与选票，保留名单/维度/登录码） | 见 §8.3 |
+| 7 | 彩排 | 提供**一键重置**（清场次/选票/**登录码**，保留名单/维度）；⚠️ 2026-09-22 起登录码一并删除失效，原先保留 | 见 §8.3 |
 | 8 | 部署 | 腾讯云轻量应用服务器，公网 IP 直连，不备案 | 见 §3、§4 |
 | 9 | 提交 | **每场终局**，不可修改；重开 = 为该演讲者新开一场 | 见 §5.4 |
 | 10 | 平局 | 依次比四条同分顺位；四条全同才是真并列，下一名跳号，并由评委组投票 | 见 §6.3、§6.5 |
@@ -457,9 +457,16 @@ localStorage 不互通。所以短码**同时**存在于 URL 路径与 localStor
 
 `POST /api/admin/reset`，要求请求体带字面量 `{ "confirm": "RESET" }`。
 
-清空 `round` / `round_submission` / `ballot` / `score`；
-**保留** `contestant` / `dimension` / `invite` / `setting`。
-登录码不会失效 —— 否则彩排完还得把所有码重发一遍。
+清空 `round` / `round_submission` / `ballot` / `score` / **`invite`**；
+**保留** `contestant` / `dimension` / `setting`。
+
+⚠️ **2026-09-22 变更：登录码从「保留」改为「全部删除」。**
+原先的理由是彩排完不用重发一遍码；但彩排期间发出的码可能已经落到非正式评委手上、
+或留在测试设备里，正式场次应当只认新签发的码。现在重置后 `invite` 表为空：
+「登录码」页回到空态，必须重新批量生成发放，仍在用旧码的浏览器拿到「登录码无效」。
+
+删除顺序上 `invite` 排在 `round_submission` 之后 —— 作废**单个**码时会拒绝
+「交过任一场」的码（见 §9 接口表），整表删除没有这个约束，但保持同样次序不容易踩坑。
 
 ### 8.4 结果页
 
@@ -617,7 +624,7 @@ localStorage 不互通。所以短码**同时**存在于 URL 路径与 localStor
 |---|---|
 | `src/db.js` | 建表、老库拒绝、**启动期匿名性断言**（§5.2 的 8 条） |
 | `src/scoring.js` | 纯函数计分：自适应去分 + LCM 缩放（§6） |
-| `src/rounds.js` | 场次读写：`getLiveRound` / `advance` / `reopenRound` / `resetAll` |
+| `src/rounds.js` | 场次读写：`getLiveRound` / `advance` / `reopenRound` / `resetAll`（唯一会碰 `ballot`/`score`/`invite` 的函数，见 §8.3） |
 | `src/routes/vote.js` | 评委端接口 |
 | `src/routes/admin.js` | 管理端接口 |
 | `src/net.js` | **口令暗号的唯一真源**：路径前缀（`DEFAULT_BASE_PATH` / `PFXT_BASE_PATH`）+ 请求头令牌（`DEFAULT_API_TOKEN` / `PFXT_TOKEN`）+ `PFXT_PUBLIC_URL` 支持 |

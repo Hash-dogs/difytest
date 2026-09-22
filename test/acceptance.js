@@ -670,9 +670,30 @@ async function checkReopenAndReset(r1) {
   const empty = await api('GET', '/api/admin/results');
   check('重置后数据不足', empty.data.insufficient === true);
 
-  // 短码必须保留 —— 否则彩排完得到处重发
-  const stillOk = await api('POST', '/api/v/login', { code: codes[0] });
-  check('★ 重置后短码仍然有效', stillOk.status === 200, JSON.stringify(stillOk.data));
+  // ★ 2026-09-22 起登录码一并删除 —— 彩排发出的码不许带进正式场次
+  check(
+    '重置时连带删除了登录码',
+    reset.data.cleared.codes === codes.length,
+    `cleared.codes=${reset.data.cleared.codes}，本次签发 ${codes.length}`
+  );
+
+  const invites = await api('GET', '/api/admin/invites');
+  check('★ 重置后登录码列表已清空', invites.data.invites.length === 0,
+    `还剩 ${invites.data.invites.length} 个`);
+
+  const gone = await api('POST', '/api/v/login', { code: codes[0] });
+  check('★ 重置后旧短码失效', gone.status === 404,
+    `${gone.status} ${JSON.stringify(gone.data)}`);
+
+  // 后一节（封盘）还要用码提交，所以这里必须补发一批；
+  // 顺便验证「清空后重新生成」这条真实路径能走通。
+  const regen = await api('POST', '/api/admin/invites', { count: 3 });
+  check('重置后可重新生成登录码', regen.data.ok === true && regen.data.created.length === 3,
+    JSON.stringify(regen.data).slice(0, 120));
+  codes = regen.data.created;
+
+  const freshOk = await api('POST', '/api/v/login', { code: codes[0] });
+  check('新签发的登录码可用', freshOk.status === 200, JSON.stringify(freshOk.data));
 }
 
 /* ============================ 八、封盘 ============================ */
