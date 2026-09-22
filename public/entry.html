@@ -30,11 +30,11 @@
       <!-- 短码输入 -->
       <section id="screen-code" class="screen" hidden>
         <div class="code-box">
+          <!-- `{{ACTIVITY_NAME}}` 由服务端替换成后台「配置 → 活动名称」的值（src/routes/vote.js），
+               评委一进页面就知道扫到的是哪一场活动。 -->
+          <p class="code-activity">{{ACTIVITY_NAME}}</p>
           <p class="eyebrow">评委打分</p>
           <h1 class="code-title">请输入登录码</h1>
-          <p class="code-desc">
-            主持人发给你的那串字符，通常是一串 8 位大写字母和数字。
-          </p>
 
           <input
             id="code-input"
@@ -46,18 +46,12 @@
             autocapitalize="characters"
             spellcheck="false"
             maxlength="16"
-            placeholder="例如 7K2M9Q4A"
             aria-label="登录码"
           />
 
           <p class="code-error" id="code-error" hidden></p>
 
           <button type="button" class="btn btn-primary btn-block" id="btn-login">开始评分</button>
-
-          <p class="hint hint-center">
-            没有登录码？请向主持人索取。<br />
-            每位评委一个码，不要转给别人。
-          </p>
         </div>
       </section>
     </div>

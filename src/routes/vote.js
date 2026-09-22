@@ -91,7 +91,11 @@ const normalizeCode = (raw) => String(raw || '').toUpperCase().replace(/[^A-Z0-9
 
 /** GET /v —— 统一入口：短码输入页（二维码指向这里） */
 router.get('/v', (req, res) => {
-  sendPage(res, 'entry.html');
+  // 活动名称由服务端渲染进页面（`{{ACTIVITY_NAME}}`），评委一进来就知道扫的是哪一场。
+  // 后台保存时已校验非空（routes/admin.js），所以不必再兜底。
+  sendPage(res, 'entry.html', {
+    ACTIVITY_NAME: getSetting('activity_name', '内部项目评比'),
+  });
 });
 
 /**
